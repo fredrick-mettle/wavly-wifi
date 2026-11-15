@@ -1,0 +1,21 @@
+{
+  "name": "wavly-wifi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Captive portal, RADIUS billing and admin system for a community Wi-Fi hotspot in Nkawie, Ghana. Starlink Mini backhaul, MikroTik hotspot, FreeRADIUS, Paystack MoMo, Arkesel SMS.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "db:validate": "node db/scripts/validate-sql.mjs db/migrations/*.sql db/seed/*.sql",
+    "db:check": "node db/scripts/check-schema.mjs",
+    "db:verify": "npm run db:validate && npm run db:check",
+    "test": "npm run db:verify && node --test 'db/tests/*.test.mjs'",
+    "test:only": "node --test 'db/tests/*.test.mjs'",
+    "db:docs": "node db/scripts/gen-schema-doc.mjs"
+  },
+  "devDependencies": {
+    "libpg-query": "^18.2.4"
+  }
+}

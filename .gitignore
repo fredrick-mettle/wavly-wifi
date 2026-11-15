@@ -1,0 +1,52 @@
+# --- secrets: never commit, never partially commit ---------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+edge.env
+# RADIUS shared secrets and router config exports can contain them
+deploy/secrets/
+deploy/**/*secret*
+
+# --- node --------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- build / runtime artifacts ----------------------------------------------
+dist/
+build/
+out/
+.next/
+.nuxt/
+.turbo/
+.cache/
+coverage/
+*.tsbuildinfo
+
+# --- local data: receipts, voucher PDFs, backups, sqlite --------------------
+var/
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+*.sql.zst
+
+# --- editor / OS -------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- logs --------------------------------------------------------------------
+logs/
+*.log
