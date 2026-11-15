@@ -206,7 +206,62 @@ The architecture brief was followed except in four places:
 
 ---
 
-## D14 — Open decisions still to make
+## D14 — Phase 2: the router configuration is rendered from the SQL seed
+
+`deploy/mikrotik/generate.mjs` parses `db/seed/0001_core_defaults.sql` with
+`libpg-query` and emits the `.rsc` script plus the hotspot HTML pages.
+
+**Rejected: a second JSON/YAML copy of the same numbers.** Two sources of truth drift, and the
+drift is invisible — an admin edits a plan in the dashboard, regenerates nothing, and the router
+keeps shaping traffic at last month's rate. **Rejected: requiring a live database.** There is
+none at authoring time, the script must be reviewable as a file, and "run psql against
+production to generate the config" is how a typo reaches 80 customers.
+
+**Cost accepted:** the seed file is now load-bearing for deployment, not just for first-run
+setup. Anything the generator reads must be a literal the parser can evaluate exactly; a `now()`
+or `gen_random_uuid()` in one of those columns throws rather than guessing. Foreign keys resolve
+to *natural keys* (`p-12-6`), never to invented UUIDs.
+
+`out/` is committed so a plan change shows up as a reviewable diff, matching the
+`docs/schema-reference.md` precedent.
+
+## D15 — Phase 2: never push to the router, and never render a secret
+
+The generator has no API client, no SSH and no `--apply` flag. That absence is the design, not
+an unimplemented feature: a tool that can reconfigure the router can also cut the only internet
+connection a village has, from a laptop that may be 200 km away.
+
+By extension it renders `secret="REPLACE_WITH_RADIUS_SECRET"` and reports the router admin
+password as a manual step. `--radius-secret-env VAR` substitutes a real secret but writes to
+`*.secret.rsc`, which `.gitignore` excludes, and warns. Settings marked `is_secret` are filtered
+out during extraction, before rendering.
+
+**Cost accepted:** applying the config is a manual, human-supervised task with two checks the
+generator cannot perform (firewall rule ordering against the factory default chain, and site
+queue nesting). Both are called out in the script at the point where they matter.
+
+## D16 — Phase 2: captive-portal detection endpoints stay intercepted
+
+**This reverses a Phase 1 decision**, which had added `captive.apple.com`,
+`msftconnecttest.com`, `connectivitycheck.gstatic.com`,
+`connectivitycheck.platform.hicloud.com` and `www.apple.com` to the walled garden on the
+reasoning that without them Android and iOS show "no internet".
+
+That reasoning is backwards. Those probes are how the phone decides whether to show the sign-in
+sheet. They must be intercepted so the probe receives a `302` to our login page instead of its
+expected `204`. Allowing them through makes the OS conclude it has real internet, and the sheet
+never appears: the customer is on Wi-Fi, has no internet, and sees nothing to fix it.
+
+They are now seeded **inactive** with the reasoning in each row's `notes`, behind
+`network.intercept_captive_detection` (default `true`), so a handset that genuinely misbehaves
+can be accommodated by flipping a setting and regenerating rather than by hand-editing a live
+router.
+
+**Cost accepted:** detection now rests on intercepting plain-HTTP probes plus DHCP option 114
+(RFC 8910), which on RouterOS v7 requires `force=yes` — v7 only sends options the client asked
+for, and no client asks for code 114.
+
+## D17 — Open decisions still to make
 
 | # | Decision | Needed by | Default if not decided |
 |---|---|---|---|

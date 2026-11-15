@@ -619,7 +619,13 @@ create table rate_profiles (
   min_download_kbps           int,                          -- guaranteed floor (MikroTik rx-rate-min)
   min_upload_kbps             int,
   queue_priority              int  check (queue_priority is null or queue_priority between 1 and 8),
-  total_queue_name            text,                         -- shared parent queue for aggregate shaping
+  -- Name of the MikroTik address list this profile's clients are placed in for
+  -- the session, pushed as the Mikrotik-Address-List RADIUS attribute
+  -- (vendor 14988, attr 19) and removed automatically on logout. Optional:
+  -- it is the hook for per-plan PCQ classes and for plan-scoped firewall rules.
+  -- There is NO RADIUS attribute that names a parent queue, which is why this
+  -- is an address list and not a queue name.
+  address_list_name           text,
   is_active                   boolean not null default true,
   notes                       text,
   created_at                  timestamptz not null default now(),
@@ -769,8 +775,14 @@ create table network_rules (
   match_type         text not null
                      check (match_type in ('domain','domain_suffix','ip','cidr','url_prefix','regex')),
   pattern            text not null,
+-- walled_garden    -> /ip hotspot walled-garden        (L7, PLAIN HTTP only)
+  --                      walled_garden_ip -> /ip hotspot walled-garden ip (L3/L4,
+  --                      REQUIRED for HTTPS: RouterOS cannot read the Host
+  --                      header inside TLS)
+  -- dns / address_list / layer7 / raw_mangle -> post-authentication filtering
   enforcement        text not null default 'dns'
-                     check (enforcement in ('dns','address_list','layer7','raw_mangle','portal_only')),
+                     check (enforcement in ('dns','address_list','layer7','raw_mangle',
+                                            'walled_garden','walled_garden_ip','portal_only')),
   priority           int not null default 100,
   category           text check (category is null or category in ('abuse','malware','adult','gambling',
                                                                   'bandwidth_hog','legal','custom','walled_garden')),
@@ -1689,11 +1701,30 @@ select
   p.code                                 as plan_code,
   p.name                                 as plan_name,
   rp.name                                as rate_profile_name,
+  -- Every column needed to render the COMPLETE Mikrotik-Rate-Limit attribute.
+  -- Exposing only the base rates would make the edge silently drop burst,
+  -- priority, rate-min and address-list configuration, and the rendered value
+  -- would still parse, so nobody would notice.
   rp.download_kbps,
   rp.upload_kbps,
+  rp.burst_download_kbps,
+  rp.burst_upload_kbps,
+  rp.burst_download_threshold_kbps,
+  rp.burst_upload_threshold_kbps,
+  rp.burst_download_seconds,
+  rp.burst_upload_seconds,
+  rp.min_download_kbps,
+  rp.min_upload_kbps,
+  rp.queue_priority,
+  rp.address_list_name,
   s.snapshot_fup_rate_profile_id         as fup_rate_profile_id,
+  frp.name                               as fup_rate_profile_name,
   frp.download_kbps                      as fup_download_kbps,
   frp.upload_kbps                        as fup_upload_kbps,
+  frp.min_download_kbps                  as fup_min_download_kbps,
+  frp.min_upload_kbps                    as fup_min_upload_kbps,
+  frp.queue_priority                     as fup_queue_priority,
+  frp.address_list_name                  as fup_address_list_name,
   s.updated_at                           as sub_updated_at,
   u.updated_at                           as user_updated_at
 from users u

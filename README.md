@@ -61,6 +61,8 @@ Full reasoning, the three topologies that were rejected, and the capacity arithm
 docs/
   01-architecture.md      Architecture, topology choice, capacity math, degradation matrix
   02-database-schema.md   Schema reasoning, conventions, retention, scale path
+  03-mikrotik.md          Router config reasoning: two walled gardens, option 114,
+                          the rx/tx inversion, capacity arithmetic, Phase 1 corrections
   schema-reference.md     GENERATED — every column of every table (npm run db:docs)
   decisions.md            Decision log: what was chosen, what was rejected, and why
   00-roadmap.md           Phase plan and progress tracker
@@ -79,10 +81,27 @@ db/
   tests/
     checker.test.mjs      15 regression tests, including false-positive guards
     fixtures/             One known defect each, plus a deliberately correct schema
+deploy/mikrotik/
+  generate.mjs            CLI: renders the router script from the SQL seed
+  lib/
+    seed.mjs              Parses db/seed/*.sql with the real PostgreSQL grammar;
+                          foreign keys resolve to natural keys, never invented UUIDs
+    rate-limit.mjs        Mikrotik-Rate-Limit renderer — the rx/tx inversion lives here
+    walled-garden.mjs     network_rules -> L7 / L3 / DNS sinkhole / address list
+    render-config.mjs     Assembles the full .rsc script
+    hotspot-files.mjs     The HTML pages the router itself serves
+  tests/
+    router-config.test.mjs  48 regression tests for the silent-failure cases
+  generated/              GENERATED, committed so config changes are reviewable diffs
+                          (deliberately not out/, dist/ or build/ - those are
+                          conventional ignore patterns, and a generated router
+                          script nobody can see is one nobody reviews)
+    wavly-nkawie-01-router.rsc   The router script (paste section by section)
+    hotspot/*.html               login, activate, alogin, error, status
+    MANIFEST.md                  What was rendered, warnings, manual steps
 ```
 
-Later phases add `app/` (portal + admin), `edge/` (syncd + FreeRADIUS config),
-`deploy/` (MikroTik scripts, systemd units) and `docs/03…08`.
+Later phases add `app/` (portal + admin), `edge/` (syncd + FreeRADIUS config) and `docs/04…08`.
 
 ---
 
@@ -98,8 +117,22 @@ npm run db:validate   # parses: 0001 (243 stmts), 0002, seed
 npm run db:check      # structural: FK resolution order, uniqueness targets, index and
                       # trigger targets, view sources, INSERT arity, ON CONFLICT arbiters
 npm run db:docs       # regenerate docs/schema-reference.md
-npm test              # all of the above + 15 regression tests
+npm test              # all of the above + 15 schema + 48 router regression tests
 ```
+
+And render the router configuration:
+
+```bash
+npm run router:generate   # writes deploy/mikrotik/generated/ (script + hotspot pages)
+npm run router:stdout     # prints the script, writes nothing
+```
+
+The generator reads the SQL seed, so the router script and the database cannot drift apart.
+It exits non-zero on any warning it cannot resolve, because everything that warns here — an
+inverted capacity pair, a hotspot `dns-name` colliding with the portal hostname, a non-HTTPS
+option 114 URL — produces a configuration that loads cleanly and does not work.
+
+See [`deploy/mikrotik/README.md`](deploy/mikrotik/README.md) before applying it to a router.
 
 Then apply for real:
 

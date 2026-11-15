@@ -421,7 +421,7 @@ Reusable bandwidth ceilings, rendered by the backend into the Mikrotik-Rate-Limi
 | `min_download_kbps` | `integer` | yes |  |  |
 | `min_upload_kbps` | `integer` | yes |  |  |
 | `queue_priority` | `integer` | yes |  | CHECK |
-| `total_queue_name` | `text` | yes |  |  |
+| `address_list_name` | `text` | yes |  |  |
 | `is_active` | `boolean` | no | true |  |
 | `notes` | `text` | yes |  |  |
 | `created_at` | `timestamptz` | no | now() |  |

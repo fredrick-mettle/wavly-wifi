@@ -11,9 +11,13 @@
     "db:validate": "node db/scripts/validate-sql.mjs db/migrations/*.sql db/seed/*.sql",
     "db:check": "node db/scripts/check-schema.mjs",
     "db:verify": "npm run db:validate && npm run db:check",
-    "test": "npm run db:verify && node --test 'db/tests/*.test.mjs'",
-    "test:only": "node --test 'db/tests/*.test.mjs'",
-    "db:docs": "node db/scripts/gen-schema-doc.mjs"
+    "test": "npm run db:verify && node --test 'db/tests/*.test.mjs' 'deploy/mikrotik/tests/*.test.mjs'",
+    "test:only": "node --test 'db/tests/*.test.mjs' 'deploy/mikrotik/tests/*.test.mjs'",
+    "db:docs": "node db/scripts/gen-schema-doc.mjs",
+    "router:generate": "node deploy/mikrotik/generate.mjs",
+    "router:stdout": "node deploy/mikrotik/generate.mjs --stdout",
+    "test:db": "node --test 'db/tests/*.test.mjs'",
+    "test:router": "node --test 'deploy/mikrotik/tests/*.test.mjs'"
   },
   "devDependencies": {
     "libpg-query": "^18.2.4"

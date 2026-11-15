@@ -101,9 +101,18 @@ on conflict (version) do update set
 insert into settings (key, value, value_type, category, description, is_secret, is_public) values
   -- Branding
   ('branding.business_name',            '"Wavly WiFi"',                  'string', 'branding',   'Shown on the portal, receipts and SMS.', false, true),
-  ('branding.portal_url',               '"https://portal.wavlywifi.com"','string', 'branding',   'Public portal base URL. Must match the MikroTik hotspot DNS name.', false, true),
+  ('branding.portal_url',               '"https://portal.wavlywifi.com"','string', 'branding',   'Public portal base URL, served from Vercel. Must be in the L3 walled garden so pre-authentication clients can reach it over HTTPS.', false, true),
   ('branding.admin_url',                '"https://admin.wavlywifi.com"', 'string', 'branding',   'Admin dashboard URL. Should be a separate hostname so it can be firewalled.', false, false),
-  ('branding.hotspot_dns_name',         '"portal.wavlywifi.com"',        'string', 'branding',   'The DNS name the captive portal answers on. Clients are redirected here.', false, true),
+  -- MUST NOT be the same hostname as branding.portal_url. /ip hotspot profile
+  -- dns-name makes the ROUTER answer for that name on the hotspot network; if it
+  -- were portal.wavlywifi.com the router would shadow the real cloud portal for
+  -- every connected client, and the portal would become unreachable from the very
+  -- network that depends on it. Must not end in .local (iOS may then fail to
+  -- detect the hotspot). This name is router-local and needs no DNS registration.
+  ('network.hotspot_local_dns_name',    '"hotspot.lan"',                 'string', 'network',    'Local-only name the hotspot answers on (the login page and activate.html). Keep it distinct from branding.portal_url.', false, false),
+  ('network.hotspot_address',           '"192.168.89.1"',                'string', 'network',    'Hotspot gateway IP. Serves login.html and activate.html; the cloud portal 302-redirects here to complete the activation handshake.', false, false),
+  ('network.edge_node_address',         '"192.168.88.10"',               'string', 'network',    'Edge node (FreeRADIUS + local Postgres + syncd) on the management network. The only management host hotspot clients may reach, and only on tcp/8787 for the activation handshake.', false, false),
+  ('network.edge_activate_port',        '8787',                          'number', 'network',    'Edge activation endpoint port. Opened to hotspot clients for exactly one host and one port; everything else from the hotspot subnet to the management subnet is dropped.', false, false),
   ('branding.wifi_ssid',                '"Wavly WiFi"',                  'string', 'branding',   'SSID advertised by the AP.', false, true),
   ('branding.support_phone_e164',       '"+233244000000"',               'string', 'branding',   'Support number printed in SMS and on the portal.', false, true),
   ('branding.timezone',                 '"Africa/Accra"',                'string', 'branding',   'All customer-facing times render in this zone. Ghana has no DST.', false, true),
@@ -152,7 +161,25 @@ insert into settings (key, value, value_type, category, description, is_secret, 
   ('network.idle_timeout_seconds',      '1800',                          'number', 'network',    'Log a client out after 30 min idle. Frees a simultaneous slot on a shared family account.', false, false),
   ('network.session_timeout_seconds',   'null',                          'number', 'network',    'Forced re-auth interval. NULL = rely on expiry only. Setting this to e.g. 21600 (6h) limits long-lived shared sessions.', false, false),
   ('network.grace_seconds',             '600',                           'number', 'network',    'Keep a session alive this long past expiry so a customer mid-download can renew instead of being cut instantly.', false, false),
-  ('network.upstream_capacity_kbps',    '80000',                         'number', 'network',    'Realistic sustained Starlink Mini downlink for capacity planning. Sum of all per-plan ceilings will exceed this; oversubscription is intentional.', false, false),
+  ('network.intercept_captive_detection','true',                         'boolean','network',
+     'Leave OS captive-portal probes (connectivitycheck.gstatic.com, captive.apple.com, msftconnecttest.com) INTERCEPTED so the sign-in sheet pops up. Allow them through and the phone concludes it has real internet and never shows the portal.', false, false),
+  ('network.captive_api_url',           '"https://portal.wavlywifi.com/captive-api.json"', 'string', 'network',
+     'RFC 8908 Captive Portal API document, advertised via DHCP option 114 (RFC 8910). This is the reliable way to get Android 13+ to open the sign-in page in the REAL browser rather than the stripped captive-portal WebView. Must be HTTPS and must be in the L3 walled garden.', false, false),
+  ('network.dhcp_option_114_enabled',   'true',                          'boolean','network',
+     'Advertise DHCP option 114. RouterOS v7 needs force=yes on the option plus an option-set on the server, because v7 only sends options the client asked for and no client asks for 114.', false, false),
+  ('network.https_redirect',            'false',                         'boolean','network',
+     'Maps to /ip hotspot profile https-redirect. LEFT OFF deliberately: RouterOS v7 does not expose a working ssl-certificate on the hotspot profile, so redirecting an https:// URL lands the client on a page with a certificate name mismatch. Better to reject the request and let the HTTP probe + option 114 do the redirect.', false, false),
+
+  -- Downlink and uplink capacity are SEPARATE numbers on Starlink and must stay
+  -- that way: the Mini does roughly 60-150 Mbps down but only 10-25 Mbps UP, so
+  -- upload is the scarce resource. A single "capacity" figure leads to a site
+  -- queue that is generous in the direction that is already fine and useless in
+  -- the direction that saturates first. Both feed the parent queue in
+  -- deploy/mikrotik and the "site at N% of capacity" admin warning.
+  ('network.downstream_capacity_kbps',  '80000',                         'number', 'network',    'Realistic sustained Starlink Mini DOWNLINK for capacity planning (60-150 Mbps is the normal range; measure on site and correct this). Sum of all per-plan download ceilings deliberately exceeds this - oversubscription is the business model.', false, false),
+  ('network.upstream_capacity_kbps',    '15000',                         'number', 'network',    'Realistic sustained Starlink Mini UPLINK (10-25 Mbps). This saturates first and is what makes video calls collapse for everyone. Measure on site and correct this.', false, false),
+  ('network.planned_concurrent_users',  '80',                            'number', 'network',    'How many customers we expect ONLINE AT ONCE at this site. Used to state the real oversubscription ratio (aggregate of per-plan ceilings vs the site ceiling) in the rendered router config and in the capacity warning. Summing plan prices or plan speeds without a headcount produces a meaningless ratio, so the headcount is an explicit input rather than a guess buried in code.', false, false),
+  ('network.site_queue_utilisation_pct','85',                            'number', 'network',    'Percentage of measured capacity the site parent queue is allowed to use. Never 100: a queue running at exactly line rate adds unbounded latency and the whole site feels broken even though throughput looks fine.', false, false),
 
   ('radius.coa_enabled',                'true',                          'boolean','radius',     'Send CoA/Disconnect to the router for instant expiry and live throttling. Requires /radius incoming on the MikroTik and a LAN-reachable RADIUS server.', false, false),
   ('radius.coa_retries',                '3',                             'number', 'radius',     'Retries before a CoA is logged as failed.', false, false),
@@ -218,23 +245,27 @@ insert into rate_profiles
    burst_download_kbps, burst_upload_kbps,
    burst_download_threshold_kbps, burst_upload_threshold_kbps,
    burst_download_seconds, burst_upload_seconds,
-   min_download_kbps, min_upload_kbps, queue_priority, notes)
+   min_download_kbps, min_upload_kbps, queue_priority, address_list_name, notes)
 values
-  ('p-3-1',    '3 / 1 Mbps',     3000,  1000,  6000,  2000,  1500,  500,  8,  8,  500,  250, 8,
+  -- address_list_name is pushed as Mikrotik-Address-List and removed on logout.
+  -- It is the ONLY RADIUS-reachable hook for attaching a client to per-plan
+  -- firewall rules or an optional PCQ class, because there is no RADIUS
+  -- attribute that names a parent queue.
+  ('p-3-1',    '3 / 1 Mbps',     3000,  1000,  6000,  2000,  1500,  500,  8,  8,  500,  250, 8, 'wv-p-3-1',
    'Fair-usage floor and the free trial. Enough for WhatsApp and a slow page load.'),
-  ('p-6-3',    '6 / 3 Mbps',     6000,  3000, 12000,  6000,  3000, 1500, 10, 10, 1000,  500, 7,
+  ('p-6-3',    '6 / 3 Mbps',     6000,  3000, 12000,  6000,  3000, 1500, 10, 10, 1000,  500, 7, 'wv-p-6-3',
    'Daily Lite. Comfortable SD video for one device.'),
-  ('p-10-5',  '10 / 5 Mbps',    10000,  5000, 20000, 10000,  5000, 2500, 12, 12, 2000, 1000, 6,
+  ('p-10-5',  '10 / 5 Mbps',    10000,  5000, 20000, 10000,  5000, 2500, 12, 12, 2000, 1000, 6, 'wv-p-10-5',
    'Daily Plus and Weekly. HD video, video calls.'),
-  ('p-12-6',  '12 / 6 Mbps',    12000,  6000, 24000, 12000,  6000, 3000, 15, 15, 3000, 1500, 5,
+  ('p-12-6',  '12 / 6 Mbps',    12000,  6000, 24000, 12000,  6000, 3000, 15, 15, 3000, 1500, 5, 'wv-p-12-6',
    'Monthly Basic. The workhorse plan.'),
-  ('p-20-10', '20 / 10 Mbps',   20000, 10000, 40000, 20000, 10000, 5000, 15, 15, 5000, 2500, 4,
+  ('p-20-10', '20 / 10 Mbps',   20000, 10000, 40000, 20000, 10000, 5000, 15, 15, 5000, 2500, 4, 'wv-p-20-10',
    'Monthly Plus. Highest ceiling we can honestly promise on a Starlink Mini with ~80 users.'),
-  ('fup-4-2',  'FUP 4 / 2 Mbps', 4000,  2000,  null,  null,  null,  null, null, null, 1000,  500, 8,
+  ('fup-4-2',  'FUP 4 / 2 Mbps', 4000,  2000,  null,  null,  null,  null, null, null, 1000,  500, 8, 'wv-fup',
    'Fair-usage throttle for Monthly Basic after the included allowance. No burst — bursting defeats the point.'),
-  ('fup-6-3',  'FUP 6 / 3 Mbps', 6000,  3000,  null,  null,  null,  null, null, null, 1500,  750, 8,
+  ('fup-6-3',  'FUP 6 / 3 Mbps', 6000,  3000,  null,  null,  null,  null, null, null, 1500,  750, 8, 'wv-fup',
    'Fair-usage throttle for Monthly Plus.'),
-  ('suspended','Suspended',          8,     8,  null,  null,  null,  null, null, null,    8,    8, 8,
+  ('suspended','Suspended',          8,     8,  null,  null,  null,  null, null, null,    8,    8, 8, 'wv-suspended',
    'Applied to suspended accounts that must still reach the portal to renew. 8 kbps is the MikroTik floor and is enough for a captive-portal page but nothing else.')
 on conflict (name) do update set
   label = excluded.label, download_kbps = excluded.download_kbps, upload_kbps = excluded.upload_kbps,
@@ -413,19 +444,34 @@ on conflict do nothing;
 insert into network_rules
   (scope, action, match_type, pattern, enforcement, priority, category, is_active, notes)
 values
-  ('global','allow','domain','portal.wavlywifi.com',        'walled_garden',1,'walled_garden',true,'The captive portal itself.'),
-  ('global','allow','domain','wavlywifi.com',               'walled_garden',1,'walled_garden',true,'Marketing site and privacy notice.'),
-  ('global','allow','domain','api.paystack.co',             'walled_garden',1,'walled_garden',true,'Only needed if we ever use Paystack Inline JS from the customer device. Server-side charges do not need it.'),
-  ('global','allow','domain','js.paystack.co',              'walled_garden',1,'walled_garden',true,'Paystack Inline JS bundle.'),
-  ('global','allow','domain','standard.paystack.co',        'walled_garden',1,'walled_garden',true,'Paystack hosted checkout, used as the fallback when MoMo push fails.'),
-  ('global','allow','domain','checkout.paystack.com',       'walled_garden',1,'walled_garden',true,'Paystack hosted checkout.'),
-  ('global','allow','domain','checkout.paystack.co',        'walled_garden',1,'walled_garden',true,'Paystack hosted checkout (alt).'),
+  -- L7 (plain HTTP only). These matter for http:// URLs such as the router's own
+  -- redirect target; every HTTPS destination ALSO needs an L3 entry below.
+  ('global','allow','domain','portal.wavlywifi.com',        'walled_garden',1,'walled_garden',true,'Plain-HTTP leg of the portal. The HTTPS leg is the walled_garden_ip row below.'),
+  ('global','allow','domain','wavlywifi.com',               'walled_garden',1,'walled_garden',true,'Plain-HTTP leg of the marketing site / privacy notice.'),
+  ('global','allow','domain','js.paystack.co',              'walled_garden',1,'walled_garden',false,'INACTIVE. Only needed if we ever load Paystack Inline JS in the customer browser. Server-side charges do not need it, and api.paystack.co must NOT be reachable pre-auth.'),
   ('global','allow','domain','fonts.gstatic.com',           'walled_garden',9,'walled_garden',false,'INACTIVE by default. The portal self-hosts its font so this never needs opening.'),
-  ('global','allow','domain','connectivitycheck.gstatic.com','walled_garden',2,'walled_garden',true,'Android captive-portal detection. Without it Android shows "no internet" and some devices refuse to open the login page.'),
-  ('global','allow','domain','captive.apple.com',           'walled_garden',2,'walled_garden',true,'iOS/macOS captive-portal detection (204 response).'),
-  ('global','allow','domain','www.apple.com',               'walled_garden',2,'walled_garden',true,'iOS captive network assistant path.'),
-  ('global','allow','domain','msftconnecttest.com',         'walled_garden',2,'walled_garden',true,'Windows NCSI captive-portal detection.'),
-  ('global','allow','domain','connectivitycheck.platform.hicloud.com','walled_garden',2,'walled_garden',true,'Huawei/Honor captive-portal detection — common on the handsets in this market.')
+  -- *** CAPTIVE-PORTAL DETECTION ENDPOINTS ARE DELIBERATELY *NOT* ALLOWED ***
+  -- Counter-intuitive but important: these probes are how the phone decides
+  -- whether to pop up the sign-in sheet. They must be INTERCEPTED by the hotspot
+  -- so the probe receives a 302 to our login page instead of its expected
+  -- 204/"Success". Putting them in the walled garden makes the OS conclude there
+  -- is real internet, and the sheet never appears. They are seeded INACTIVE so the
+  -- entries are documented and can be flipped if a specific handset misbehaves.
+  ('global','allow','domain','connectivitycheck.gstatic.com','walled_garden',2,'walled_garden',false,'INACTIVE ON PURPOSE. Android probe — leave it intercepted so the sign-in sheet pops. Enable only if a specific handset refuses to open the portal.'),
+  ('global','allow','domain','captive.apple.com',           'walled_garden',2,'walled_garden',false,'INACTIVE ON PURPOSE. Apple CNA probe — interception is what triggers the sheet.'),
+  ('global','allow','domain','www.apple.com',               'walled_garden',2,'walled_garden',false,'INACTIVE ON PURPOSE. Apple hotspot-detect path.'),
+  ('global','allow','domain','msftconnecttest.com',         'walled_garden',2,'walled_garden',false,'INACTIVE ON PURPOSE. Windows NCSI probe.'),
+  ('global','allow','domain','connectivitycheck.platform.hicloud.com','walled_garden',2,'walled_garden',false,'INACTIVE ON PURPOSE. Huawei/Honor probe — common on handsets in this market.'),
+  -- The portal itself is HTTPS. RouterOS cannot read the Host header inside TLS,
+  -- so the L7 (/ip hotspot walled-garden) table will NOT unblock it. HTTPS
+  -- destinations must go in the L3 table (/ip hotspot walled-garden ip) using
+  -- dst-host, which RouterOS resolves into dynamic address entries. The renderer
+  -- in deploy/mikrotik/lib/render-config.mjs emits them, and a scheduler refreshes
+  -- the resolution because Vercel/Cloudflare IPs rotate.
+  ('global','allow','domain','portal.wavlywifi.com',        'walled_garden_ip',1,'walled_garden',true,'L3 walled garden (dst-host). REQUIRED for HTTPS — the L7 table cannot match TLS.'),
+  ('global','allow','domain','wavlywifi.com',               'walled_garden_ip',1,'walled_garden',true,'L3 walled garden (dst-host).'),
+  ('global','allow','domain','checkout.paystack.com',       'walled_garden_ip',1,'walled_garden',true,'L3 walled garden (dst-host). Hosted-checkout fallback.'),
+  ('global','allow','domain','standard.paystack.co',        'walled_garden_ip',1,'walled_garden',true,'L3 walled garden (dst-host).')
 on conflict do nothing;
 
 

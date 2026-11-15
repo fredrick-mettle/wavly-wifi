@@ -84,8 +84,8 @@ it is an improvement rather than a missing organ.
 | 3 | Arkesel sender ID registration (`WAVLY`?) | All SMS | Phase 5 |
 | 4 | Paystack live keys + business verification | Real money | Phase 5 |
 | 5 | Edge node hardware: N100 mini PC vs Raspberry Pi 4 | Provisioning script | Phase 4 |
-| 6 | MikroTik model on site (assumed hAP ax3) | Phase 2 script comments | **Phase 2** |
-| 7 | Whether the portal and admin share a hostname or split | TLS + firewall rules | Phase 2 |
+| 6 | MikroTik model on site (assumed hAP ax3) | Radio names in §1 of the script | **Still open.** Script assumes `wifi1`=5 GHz / `wifi2`=2.4 GHz and 5 ethernet ports; verify with `/interface wifi print` |
+| 7 | Whether the portal and admin share a hostname or split | TLS + firewall rules | Assumed split (`portal.` / `admin.`); only the portal hostname is in the walled garden |
 | 8 | Tax status (VAT/NHIL/GETFund registration) | `plans.tax_percent` | Phase 6 |
 | 9 | Data Protection Commission registration | Legal, not technical | Before taking subscribers |
 
@@ -98,7 +98,11 @@ rewrite.
 
 - [x] **Phase 1** — architecture, tech stack, database schema, seed data, SQL validation and
       structural checking tooling, decision log, generated schema reference.
-- [ ] Phase 2 — MikroTik RouterOS v7 configuration
+- [x] **Phase 2** — MikroTik RouterOS v7 configuration: a generator that renders the router
+      script and hotspot pages *from the SQL seed* (one source of truth), both walled gardens,
+      DHCP option 114 with `force=yes`, RADIUS client + CoA, network segmentation, site
+      capacity queue, rate-limit rendering with the rx/tx inversion handled and tested, and 48
+      regression tests. Corrected eight Phase 1 assumptions — see §3.13.
 - [ ] Phase 3 — FreeRADIUS
 - [ ] Phase 4 — edge node / `syncd`
 - [ ] Phase 5 — backend

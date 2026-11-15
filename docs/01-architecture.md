@@ -108,11 +108,18 @@ Two numbers you must check before you sell a single GH¢100 plan:
    - **per-plan ceilings** that are a cap, never a guarantee — the portal copy must say
      "up to";
    - **burst** on every profile so a page load feels instant without anyone holding a large
-     steady allocation. `rate_profiles` carries exactly these fields, and
-     `rate_profiles.total_queue_name` is how a profile is attached to the parent queue.
+     steady allocation. `rate_profiles` carries exactly these fields.
 
-> The schema deliberately stores `network.upstream_capacity_kbps` as a setting so the
-> dashboard can show "site is at 91 % of measured capacity" — the warning that tells you to
+There is no RADIUS attribute that names a parent queue — a common misconception — so a
+profile attaches to shared shaping through `rate_profiles.address_list_name`, pushed as
+`Mikrotik-Address-List` (vendor 14988, attribute 19) for the session and removed
+automatically on logout. That is the hook for per-plan PCQ classes and plan-scoped
+firewall rules.
+
+> The schema deliberately stores `network.downstream_capacity_kbps` and
+> `network.upstream_capacity_kbps` as **separate** settings — Starlink Mini does roughly
+> 60–150 Mbps down but only 10–25 Mbps up, and upload saturates first — so the dashboard
+> can show "site is at 91 % of measured capacity". That is the warning that tells you to
 > stop selling before customers start complaining.
 
 ---
@@ -226,7 +233,9 @@ your edge node:
  1. Phone joins SSID "Wavly WiFi" (open). Gets DHCP on 192.168.89.0/24.
  2. Any HTTP request is intercepted. MikroTik 302-redirects to
       https://portal.wavlywifi.com/?mac=$(mac)&ip=$(ip)&link-orig=$(link-orig-escaped)
-    because /ip hotspot profile has html-directory-override set.
+    because the router's own login.html (in html-directory, on the router flash)
+    is a redirect page. NOTE: html-directory-override is for files on attached
+    USB/HDD storage, NOT for a remote URL - do not use it for this.
     portal.wavlywifi.com is in the walled garden, so this loads before paying.
  3. Portal: enter phone number -> Arkesel sends a 6-digit OTP -> verified ->
     users row created (or matched), a customer session cookie is set.
@@ -531,7 +540,11 @@ the design depends on it.
 
 - **HTTPS everywhere.** Cloudflare in front of Vercel with strict TLS and HSTS. The
   router-side activation page is HTTP *by necessity* (mixed content) and carries a one-time
-  60-second MAC-bound token instead of credentials.
+  60-second MAC-bound token instead of credentials. RouterOS v7 does **not** expose a working
+  `ssl-certificate` on the hotspot profile, so an HTTPS login page served by the router is not
+  an option — and `https-redirect` is left **off** for the same reason (it would land clients
+  on a certificate name mismatch). Detection works by intercepting the *plain-HTTP* probes and
+  by advertising DHCP option 114 (RFC 8910), which points at an HTTPS portal.
 - **Never trust the client.** Prices, plan terms, amounts and expiry are read from the
   database on the server at request time. The client sends a plan code and an idempotency
   key, nothing else. `orders_total_ck` makes a tampered total a constraint violation.
@@ -620,6 +633,31 @@ Starlink plan tolerates the traffic.
    correct action automatic and the silent failure visible.*
 7. **AirtelTigo provider code drift** (`atl` vs `tgo` in Paystack docs). *Mitigation: stored as
    a setting, correctable without a deploy.*
+
+---
+
+### Walled garden: the L7 table cannot see HTTPS
+
+RouterOS has **two** walled gardens and they are not interchangeable:
+
+| | Path | Matches | `action` values |
+|---|---|---|---|
+| HTTP (L7) | `/ip hotspot walled-garden` | the HTTP `Host` header + URL path — **plain HTTP only** | `allow` / `deny` |
+| IP (L3/L4) | `/ip hotspot walled-garden ip` | destination IP, protocol, port — **and `dst-host`, which RouterOS resolves into dynamic address entries** | `accept` / `drop` / `reject` |
+
+Our portal is HTTPS on Vercel behind Cloudflare. A `dst-host=` entry in the **L7** table will
+not unblock it, because RouterOS cannot read a Host header inside a TLS ClientHello. Every
+HTTPS destination therefore needs an **L3** entry. And because Vercel and Cloudflare IPs
+rotate, `dst-host` in the L3 table is paired with a scheduler that re-resolves it
+periodically — otherwise the walled garden silently goes stale and new customers cannot reach
+the portal. That is the worst possible failure mode here, because it presents as "the portal
+is down" while everything you can see looks healthy.
+
+Conversely, **OS captive-portal probes must be left intercepted**, not allowed. If
+`connectivitycheck.gstatic.com` is in the walled garden the phone receives its expected `204`,
+concludes it has real internet, and never shows the sign-in sheet.
+
+Both are implemented in `deploy/mikrotik/` (Phase 2).
 
 ---
 

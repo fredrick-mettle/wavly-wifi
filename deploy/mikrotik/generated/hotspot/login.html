@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Wavly WiFi — Get online</title>
+<style>:root{--bg:#0f172a;--fg:#f8fafc;--mut:#94a3b8;--acc:#22c55e;--err:#f87171;--card:#1e293b;--line:#334155}@media (prefers-color-scheme:light){:root{--bg:#f1f5f9;--fg:#0f172a;--mut:#475569;--card:#fff;--line:#e2e8f0}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-text-size-adjust:100%}.card{max-width:26rem;margin:0 auto;padding:1.25rem 1.1rem calc(1.25rem + env(safe-area-inset-bottom))}.brand{display:flex;align-items:center;gap:.7rem;margin-bottom:1rem}.logo{display:grid;place-items:center;width:2.4rem;height:2.4rem;border-radius:.6rem;background:var(--acc);color:#052e16;font-weight:800;font-size:1.2rem;flex:none}h1{margin:0;font-size:1.15rem;line-height:1.2}.sub{margin:.1rem 0 0;color:var(--mut);font-size:.8rem}.lede{margin:.2rem 0 1rem}.lede.ok{color:var(--acc);font-weight:600}.err{color:var(--err)}.btn{display:block;width:100%;margin:.5rem 0;padding:.85rem 1rem;border:1px solid var(--line);border-radius:.65rem;background:var(--card);color:var(--fg);font:inherit;font-weight:600;text-align:center;text-decoration:none;cursor:pointer;-webkit-tap-highlight-color:transparent}.btn:active{transform:translateY(1px)}.btn-primary{background:var(--acc);border-color:var(--acc);color:#052e16}label{display:block;margin:.8rem 0 .25rem;font-size:.85rem;color:var(--mut)}input{width:100%;padding:.8rem;border:1px solid var(--line);border-radius:.6rem;background:var(--bg);color:var(--fg);font:inherit}input:focus{outline:2px solid var(--acc);outline-offset:1px}.voucher{margin-top:1.25rem;border-top:1px solid var(--line);padding-top:.75rem}.voucher summary{cursor:pointer;font-weight:600;padding:.5rem 0;color:var(--mut)}.stat{display:grid;grid-template-columns:auto 1fr;gap:.4rem .8rem;margin:0 0 1rem;font-size:.9rem}.stat dt{color:var(--mut)}.stat dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}.fine{color:var(--mut);font-size:.78rem;margin:.6rem 0}footer{margin-top:1.5rem;border-top:1px solid var(--line);padding-top:.75rem}footer a{color:var(--fg)}.spinner{width:1.5rem;height:1.5rem;margin:1rem auto;border-radius:50%;border:3px solid var(--line);border-top-color:var(--acc);animation:sp .8s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.offline{margin-top:1rem}</style>
+<script src="/md5.js"></script></head>
+<body>
+<main class="card">
+  <header class="brand">
+    <span class="logo" aria-hidden="true">W</span>
+    <div>
+      <h1>Wavly WiFi</h1>
+      <p class="sub">Nkawie Main</p>
+    </div>
+  </header>
+
+  <p class="lede">Get online in about a minute. Pay with MTN, Telecel or AirtelTigo MoMo.</p>
+
+  <a class="btn btn-primary" href="https://portal.wavlywifi.com/?src=hotspot&amp;mac=$(mac)">Get online — see plans</a>
+
+  <details class="voucher">
+    <summary>I have a voucher code</summary>
+    <form name="sendForm" method="post" action="$(link-login-only)" onsubmit="return doLogin()">
+      <input type="hidden" name="dst" value="$(link-orig-esc)">
+      <input type="hidden" name="popup" value="true">
+      $(if chap-id)
+      <input type="hidden" name="chap-id" value="$(chap-id)">
+      <input type="hidden" name="chap-challenge" value="$(chap-challenge)">
+      $(endif)
+      <label for="vc">Voucher code</label>
+      <input id="vc" type="text" name="username" autocapitalize="characters" autocomplete="off"
+             spellcheck="false" inputmode="text" required placeholder="e.g. 7QK4M-2XZ9R">
+      <label for="vp">Code again, or leave blank</label>
+      <input id="vp" type="password" name="password" autocomplete="off">
+      <button class="btn" type="submit">Connect</button>
+    </form>
+    <p class="fine">Vouchers work even when the satellite link is down.</p>
+  </details>
+
+  $(if error)
+  <p class="err" role="alert"><strong>$(error)</strong></p>
+  <p class="fine">If you have already paid, wait a moment and try again — activation can take a
+  few seconds to reach the router.</p>
+  $(endif)
+
+  <div class="offline">
+    <p class="fine">If the button above does not load, our internet link is down. Your existing
+    session will keep working; a voucher code will too. Nothing is charged while we are offline.</p>
+  </div>
+  <footer>
+    <p>Help: <a href="tel:+233244000000">+233244000000</a></p>
+    <p class="fine">By connecting you agree to our <a href="https://portal.wavlywifi.com/privacy">privacy notice</a>.</p>
+  </footer>
+</main>
+<script>
+// http-chap: never send the code in plaintext over an unencrypted hotspot.
+// hexMD5 comes from the stock /md5.js. Without JS the form still posts, and the
+// router will reject it only if http-pap is disabled — which it is, deliberately.
+function doLogin() {
+  var f = document.sendForm;
+  if (!f.password.value) { f.password.value = f.username.value; }
+  $(if chap-id)
+  var chapId = '$(chap-id)';
+  var chapChallenge = '$(chap-challenge)';
+  if (window.hexMD5) {
+    f.password.value = hexMD5(chapId + f.password.value + chapChallenge);
+  } else {
+    // md5.js missing would silently send plaintext; fail visibly instead.
+    alert('This page is missing a required file. Please tell the operator: md5.js');
+    return false;
+  }
+  $(endif)
+  return true;
+}</script>
+</body>
+</html>
