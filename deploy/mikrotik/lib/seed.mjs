@@ -183,24 +183,109 @@ export function maybeRefKey(x) {
 
 /**
  * Turn one INSERT statement into an array of row objects.
+ *
+ * Two seed shapes are supported:
+ *   insert into t (a,b) values (1,2), (3,4);
+ *   insert into t (a,b) select s.id, 'x' from sites s where s.code = 'nkawie-01';
+ *
+ * The second form is how the seed attaches a row to a parent without knowing the
+ * parent's UUID. Silently skipping it (which is what this function used to do)
+ * produced an empty result rather than an error, so the edge config generator
+ * reported "no nas_devices rows" for a seed that plainly had one.
  */
 function rowsFromInsert(ins) {
   const rel = ins.relation?.relname;
   if (!rel) return [];
   const cols = (ins.cols || []).map((c) => c.ResTarget?.name);
-  const lists = ins.selectStmt?.SelectStmt?.valuesLists || [];
-  if (!lists.length) return []; // `insert into t select …`
+  const sel = ins.selectStmt?.SelectStmt;
+  if (!sel) return [];
 
-  return lists.map((rowNode, ri) => {
-    const items = rowNode.List?.items || [];
-    const out = {};
-    items.forEach((item, ci) => {
-      const col = cols[ci];
-      if (!col) throw new Error(`seed: ${rel} row ${ri} has more values than columns`);
-      out[col] = value(item, `${rel}[${ri}].${col}`);
+  const lists = sel.valuesLists || [];
+  if (lists.length) {
+    return lists.map((rowNode, ri) => {
+      const items = rowNode.List?.items || [];
+      const out = {};
+      items.forEach((item, ci) => {
+        const col = cols[ci];
+        if (!col) throw new Error(`seed: ${rel} row ${ri} has more values than columns`);
+        out[col] = value(item, `${rel}[${ri}].${col}`);
+      });
+      return out;
     });
-    return out;
+  }
+
+  // INSERT ... SELECT
+  if (sel.targetList?.length) return [rowFromInsertSelect(rel, cols, sel)];
+  return [];
+}
+
+/**
+ * Resolve `insert into t (…) select s.id, 'lit' from sites s where s.code = 'x'`.
+ *
+ * Only the single-table, single-row, equality-filter form is supported, and only
+ * because that is the only form the seed uses. Anything else throws rather than
+ * being approximated: a config generator that guesses a foreign key is worse than
+ * one that refuses to run.
+ */
+function rowFromInsertSelect(rel, cols, sel) {
+  const from = sel.fromClause || [];
+  if (from.length !== 1 || !from[0].RangeVar) {
+    throw new Error(`seed: INSERT ... SELECT into ${rel} must select from exactly one table`);
+  }
+  const rv = from[0].RangeVar;
+  const table = rv.relname;
+  // `from sites s` gives an alias; without one the table name is the qualifier.
+  // libpg-query 18 nests this as alias.aliasname, not alias.Alias.aliasname.
+  const alias = rv.alias?.aliasname || rv.alias?.Alias?.aliasname || table;
+
+  // The WHERE clause tells us which row of the parent table was picked, by
+  // natural key. That is what lets `s.id` become a resolvable reference instead
+  // of an unknowable UUID.
+  let matchColumn = null;
+  let matchValue = null;
+  const w = sel.whereClause;
+  if (w?.A_Expr) {
+    const kind = w.A_Expr.kind ?? 0;
+    const op = w.A_Expr.name?.map((n) => n.String?.sval).join('');
+    const left = w.A_Expr.lexpr?.ColumnRef?.fields?.map((f) => f.String?.sval);
+    if ((kind === 'AEXPR_OP' || kind === 0) && op === '=' && left?.length === 2 && left[0] === alias) {
+      matchColumn = left[1];
+      matchValue = value(w.A_Expr.rexpr, `${rel} (INSERT...SELECT where)`);
+    }
+  }
+  if (!matchColumn || !['name', 'code', 'key'].includes(matchColumn)) {
+    throw new Error(
+      `seed: INSERT ... SELECT into ${rel} must filter its source table by a natural key ` +
+      `(name/code/key); got ${matchColumn || 'no usable WHERE'}. Without that, the joined ` +
+      `id cannot be resolved without a live database.`
+    );
+  }
+
+  const items = sel.targetList.map((t) => t.ResTarget?.val);
+  if (items.length !== cols.length) {
+    throw new Error(`seed: INSERT ... SELECT into ${rel} selects ${items.length} values for ${cols.length} columns`);
+  }
+
+  const out = {};
+  items.forEach((item, ci) => {
+    const col = cols[ci];
+    if (!col) throw new Error(`seed: ${rel} INSERT...SELECT has more values than columns`);
+
+    // A reference to the parent's column (usually its id) becomes a {$ref}.
+    const fields = item?.ColumnRef?.fields?.map((f) => f.String?.sval);
+    if (fields?.length === 2 && fields[0] === alias) {
+      out[col] = { [REF]: true, table, selectColumn: fields[1], matchColumn, matchValue };
+      return;
+    }
+    if (fields?.length === 1) {
+      throw new Error(
+        `seed: ${rel}.${col} references unqualified column '${fields[0]}' in an ` +
+        `INSERT ... SELECT; qualify it as ${alias}.${fields[0]}.`
+      );
+    }
+    out[col] = value(item, `${rel}(select).${col}`);
   });
+  return out;
 }
 
 /**

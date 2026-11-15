@@ -265,8 +265,138 @@ for, and no client asks for code 114.
 
 | # | Decision | Needed by | Default if not decided |
 |---|---|---|---|
-| 1 | Starlink plan and its **data allowance** | Before Phase 5 | Caps stay as seeded; risky |
-| 2 | Domain registration (`wavlywifi.com`?) | Phase 3 | Placeholder domain, env-driven |
-| 3 | Edge node hardware: N100 mini PC vs Raspberry Pi 4 | Phase 7 | Mini PC |
+| 1 | Starlink plan and its **data allowance** | Before Phase 6 go-live | Caps stay as seeded; risky — see `docs/01-architecture.md` |
+| 2 | Domain registration (`wavlywifi.com`?) | Phase 5 | Placeholder domain, env-driven |
+| 3 | Edge node hardware: N100 mini PC vs Raspberry Pi 4 | Phase 4 | Mini PC |
 | 4 | Whether to register the DPC data-controller filing yourself or via an agent | Phase 7 | File it yourself |
 | 5 | Tax status — VAT/NHIL/GETFund registration threshold | Phase 5 | `billing.tax_percent_default = 0` |
+| 6 | MikroTik model and radio naming on site | Phase 8 (acceptance tests) | hAP ax3, `wifi1` = 5 GHz |
+| 7 | IANA private enterprise number for `dictionary.wavly`, or drop the vendor block | Before Phase 6 go-live | Placeholder PEN 52381 — harmless while no Wavly attribute goes on the wire, unsafe the moment one does |
+
+## D18 — Phase 3: FreeRADIUS gets its own virtual server, and `default` is deleted
+
+Rather than patching the stock `sites-available/default` (~1300 lines), Phase 3
+ships `sites-available/wavly` and removes `sites-enabled/default`.
+
+The stock site loads EAP, LDAP, Perl, Python, `unix` and digest authentication. On
+a machine whose LAN is full of people with a financial incentive to get free
+internet, `unix` means any shell account on the edge node is also a Wi-Fi
+credential, and EAP means an unused TLS handshake endpoint. Deleting `default` also
+removes the possibility of two servers racing to bind 1812/1813 — a failure that
+presents as "our policies are being ignored".
+
+Listeners bind to `192.168.88.10`, not `*`: harmless today, but a second interface
+on this box would otherwise expose authentication to every customer.
+
+**Cost accepted:** no `suffix` realm handling (our usernames are phone numbers and
+voucher codes) and no proxying, so a second site cannot be federated through this
+node — it gets its own edge node, which is the intended scale path anyway.
+
+## D19 — Phase 3: authorization logic lives in SQL functions, not in unlang
+
+The device roster, its registration side effect and the outbox enqueue are three
+PL/pgSQL functions in `db/migrations/0003_edge_radius_logic.sql`
+(`wavly_check_device`, `wavly_device_count`, `wavly_queue`), called once each from
+`policy.d/wavly`.
+
+The alternative — the same logic in unlang — means string surgery on MAC addresses
+and `%{sql: ...}` calls inside `if` conditions, comparing values that are all text.
+It would work, and it would be the part of the system nobody dares change in six
+months, deciding whether paying customers can log in. SQL gives types,
+transactions (`SELECT ... FOR UPDATE`), and a place to write a test.
+
+Two rules inside those functions are load-bearing:
+
+- **No MAC sent → allow.** Never block a customer for a missing attribute. If a
+  firmware upgrade stops the router sending `Calling-Station-Id`, device binding
+  degrades to cloud-enforced `Simultaneous-Use` and a canary log fills up; the site
+  does not go down.
+- **Unseen devices are registered `pending` even when rejected**, so a refused
+  device is visible in the portal and self-approvable. Without the row it is
+  indistinguishable from a broken router.
+
+`wavly_queue` catches constraint violations and returns `NULL` rather than raising,
+because a bookkeeping failure must never stop a customer authenticating.
+
+## D20 — Phase 3: expiry disconnects are originated out-of-band by `syncd`
+
+FreeRADIUS 3.x can only send CoA/Disconnect while handling an incoming
+Access-Request or Accounting-Request — never on a wall clock, and never if the
+request was proxied. Fair usage is therefore easy (interim accounting arrives every
+five minutes and we attach a CoA to it), but **subscription expiry has no packet to
+hang one on**. Without an out-of-band mechanism, expiry only bites at the
+customer's next re-authentication, which for a monthly plan can be days later.
+
+So `deploy/edge/bin/wv-coa` exists: a validated `radclient` wrapper that `syncd`
+shells out to, and that an operator can run by hand. Its exit codes separate
+**NAK (2)** from **no-reply (3)** because the responses differ — a NAK means our
+attributes are wrong and retrying is pointless, a timeout means the CoA path is
+broken and retrying is the only fix. An unrecognised reply is never reported as
+success, since falsely confirming a disconnect is how a customer stays online for
+free for a month.
+
+**Cost accepted:** `syncd` becomes part of the enforcement path, not just
+replication. If it is down, expiry stops being enforced in real time (fair usage
+still is, locally). That is already true of the whole edge design and is covered by
+the stale-heartbeat alert.
+
+## D21 — Phase 3: `read_clients = no` — the RADIUS secret never enters the database
+
+Clients are defined in a generated `clients.conf`, not read from the `nas` table.
+With `read_clients = yes` the shared secret lives in a column, and therefore in
+every nightly `pg_dump` — including the copy that leaves the site. That dump would
+hold the one credential that lets anyone on the LAN authenticate any user, or forge
+an Access-Accept.
+
+The `nas` table is still populated, for inventory, the `last_acct_at` heartbeat and
+as the CoA target list; its `secret` column stays empty and install step 6c checks
+it.
+
+Secrets reach config via `nas_devices.shared_secret_ref`, a **pointer**
+(`edge:env:RADIUS_SECRET_NKAWIE01`) resolved at render time. The generator refuses
+to run if that column holds a literal, and refuses a secret under 22 characters
+(recoverable offline from one captured packet).
+
+**Cost accepted:** adding a router means regenerating `clients.conf` and reloading
+FreeRADIUS. That friction is the point — adding a RADIUS client should involve a
+human.
+
+## D22 — Phase 3: Message-Authenticator is required in both directions
+
+Blast-RADIUS (CVE-2024-3596) made RADIUS/MD5 responses forgeable by an on-path
+attacker. Both directions are configured, and they fail differently:
+
+- **Inbound:** `require_message_authenticator = yes` per client. RouterOS 7.x sends
+  it, so this costs nothing. If it ever breaks logins the server says
+  `BlastRADIUS check: Received packet without Message-Authenticator` — the fix is a
+  router firmware upgrade, **not** setting the flag to `no`.
+- **Outbound:** RouterOS **silently drops** replies without it, logging
+  `missing message auth, dropping` and telling the customer
+  `RADIUS server is not responding`, while FreeRADIUS logs `Login OK` and looks
+  healthy. `post-auth` therefore sets `&Message-Authenticator := 0x00` explicitly
+  (guarded, so it is never emitted twice). FreeRADIUS ≥ 3.2.5 does this itself, and
+  Debian may ship either side of that line; being explicit removes the dependency
+  on which point release is installed.
+
+We deliberately do **not** follow upstream's advice that the CoA secret should
+differ from the client secret: RouterOS has one secret per RADIUS client entry and
+`/radius incoming` uses it for CoA too, so on MikroTik they must match.
+
+## D23 — Phase 3: edge config is templated and rendered, not environment-interpolated
+
+`mods-available/sql` and `clients.conf` are templates with `@@TOKENS@@`, rendered
+by `deploy/edge/generate.mjs` from `/etc/wavly/edge.env`. The rendered output goes
+to `deploy/edge/local/`, which is gitignored.
+
+FreeRADIUS does support `$ENV{...}` in config files, but support varies by version
+and could not be verified against 3.2.x from here, and it has a worse failure mode:
+an unset variable expands to an empty string, so `password = ""` is valid config and
+the server starts and cannot reach the database. Rendering instead means the
+generator can **refuse** to produce a config with an unsubstituted token, a missing
+variable, a literal secret, a short secret, or a `coa_server` with no matching
+`home_server` — all of which would otherwise be silent outages.
+
+This differs from the MikroTik generator, whose output **is** committed
+(`deploy/mikrotik/generated/`), because that output contains no secrets. This one
+does, so committing it is not an option and neither is reviewing it in git; the
+templates are what you review.

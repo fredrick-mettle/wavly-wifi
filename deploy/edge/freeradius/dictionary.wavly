@@ -1,0 +1,76 @@
+# -*- text -*-
+# =============================================================================
+# WAVLY WIFI - control attributes
+# =============================================================================
+# Install as /usr/share/freeradius/dictionary.wavly and add to
+# /etc/freeradius/3.0/dictionary:
+#     $INCLUDE /usr/share/freeradius/dictionary.wavly
+#
+# EVERY ATTRIBUTE HERE IS A SERVER-SIDE CONTROL ATTRIBUTE. None of them is ever
+# placed in an Access-Accept, so none of them goes on the wire and none of them
+# can be seen or forged by a customer. They exist to carry authorization and
+# quota state from the SQL module into unlang policy.
+#
+# The vendor id 52381 is a PLACEHOLDER. It is unassigned by IANA and must be
+# replaced with a real Private Enterprise Number before any of these attributes
+# is ever sent to a NAS. Today that never happens, so the collision risk is
+# nil - but a placeholder that looks like a real PEN would eventually be
+# copy-pasted into a reply packet by someone who did not read this comment.
+#
+# WHY NOT Tmp-Integer-0 / Tmp-String-1?
+# That is the common shortcut, and it works, but the result is unlang that reads
+#   if (&control:Tmp-Integer-0 > &control:Tmp-String-1)
+# with no way to tell which is the cap and which is the usage six months later.
+# Naming them costs one dictionary file and makes the FUP policy self-documenting
+# at the exact place where getting the comparison backwards means giving away
+# unlimited data.
+# =============================================================================
+
+VENDOR		Wavly					52381
+
+BEGIN-VENDOR	Wavly
+
+# --- data quota, in BYTES -----------------------------------------------------
+# integer64, not integer: a monthly cap of 250 GB is 268435456000, which
+# overflows a 32-bit attribute (max 4294967295, i.e. ~4 GiB). Using `integer`
+# here would not fail loudly - it would wrap, and a customer who had used 5 GB
+# would compare as being under a truncated cap.
+ATTRIBUTE	Wavly-Data-Cap				1	integer64
+ATTRIBUTE	Wavly-Used-Bytes			2	integer64
+
+# --- fair usage ---------------------------------------------------------------
+# The Mikrotik-Rate-Limit string to CoA into a live session when the cap is
+# crossed, and whether FUP is already applied. Without the second flag every
+# interim accounting update would re-send the same CoA - MikroTik would cope, but
+# it churns the queue tree and fills the router log.
+ATTRIBUTE	Wavly-Fup-Rate				3	string
+ATTRIBUTE	Wavly-Fup-Active			4	integer
+
+# --- device control -----------------------------------------------------------
+# max_registered_devices + is_bound from the cloud `users` row. These are the
+# attributes that actually stop one subscription being shared across a village:
+# Simultaneous-Use only limits sessions that overlap in time, so two people
+# alternating on the same account never trip it.
+ATTRIBUTE	Wavly-Mac-Binding			5	integer
+ATTRIBUTE	Wavly-Max-Devices			6	integer
+ATTRIBUTE	Wavly-Device-Count			7	integer
+
+# --- account state ------------------------------------------------------------
+# Carried so a reject can say WHY. "Your plan expired on 3 May" is a message a
+# customer can act on; a bare Access-Reject makes them call you.
+ATTRIBUTE	Wavly-User-Status			8	string
+ATTRIBUTE	Wavly-Expires-At			9	string
+ATTRIBUTE	Wavly-Plan-Code				10	string
+
+# --- derived at request time, never written by syncd ---------------------------
+# Wavly-Used-Baseline IS written by syncd (bytes already accounted for before the
+# current session, so a reconnect does not reset the cap). The other two are
+# scratch space for the policies: a validated MAC and the roster decision.
+#
+# They need dictionary entries even though nothing persists them, because unlang
+# cannot reference an attribute the dictionary does not define.
+ATTRIBUTE	Wavly-Used-Baseline			11	integer64
+ATTRIBUTE	Wavly-Mac				12	string
+ATTRIBUTE	Wavly-Device-Decision			13	string
+
+END-VENDOR	Wavly

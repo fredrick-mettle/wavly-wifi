@@ -13,16 +13,16 @@ plan — it exists so you can see what is coming and object early.
 | Phase | Deliverable | Produces | Depends on | Est. |
 |---|---|---|---|---|
 | **1** | Architecture + tech stack (brief #1)<br>Database schema (brief #2) | `docs/01`, `docs/02`, `docs/decisions.md`, `docs/schema-reference.md`, `db/migrations/000{1,2}`, `db/seed/0001`, validation tooling + 15 tests | — | ✅ done |
-| **2** | MikroTik RouterOS v7 config script (brief #3) | `deploy/mikrotik/` — hotspot, RADIUS client, `/radius incoming` for CoA, walled garden, address lists, DoH block, parent queue, rate-limit rendering, two-VLAN isolation, the local `activate.html`, backup/export script | 1 | 1 day |
-| **3** | FreeRADIUS setup and config (brief #4) | `deploy/edge/` — `radiusd.conf`, `mods-available/sql` (PostgreSQL + `read_clients`), the `postauth` password-redaction override, `sites-available/default` with the MAC-binding and expiry policies, `clients.conf` generation, dictionary, systemd unit, a `radtest` harness | 1, 2 | 1 day |
+| **2** | MikroTik RouterOS v7 config script (brief #3) | `deploy/mikrotik/` — hotspot, RADIUS client, `/radius incoming` for CoA, walled garden, address lists, DoH block, parent queue, rate-limit rendering, two-VLAN isolation, the local `activate.html`, backup/export script | 1 | ✅ done |
+| **3** | FreeRADIUS setup and config (brief #4) | `deploy/edge/` — generator + templates for `clients.conf`, `sites-available/wavly` (**not** `default` — D18), `sites-available/originate-coa`, `mods-available/sql` (PostgreSQL, `read_clients = no` — D21), `policy.d/wavly` (MAC binding, device roster, expiry, fair usage), the `postauth` password-redaction override, dictionary, systemd override, `bin/wv-coa`, and `db/migrations/0003` for the SQL the policies call. `radiusd.conf` is package-managed and deliberately not rendered (D23) | 1, 2 | ✅ done |
 | **4** | Edge node: `syncd` + activation handshake *(new component — forced by CGNAT, no matching item in the brief)* | `edge/` — Supabase Realtime subscriber, long-poll fallback, full reconcile, projection writer, CoA originator, idempotent usage uplink, degraded-mode logic, the LAN token-exchange endpoint, local `pg_dump` + off-site copy, heartbeat | 1, 3 | 2 days |
 | **5** | Backend (brief #5) | `app/` — Express + TS, repositories, OTP auth, plans, checkout, Paystack client, webhook handler, voucher generation/redemption/export, receipts, refunds, jobs worker, cron tick, rate limiting, CSRF, audit middleware, `scripts/create-admin.mjs` | 1, 4 | 3 days |
 | **6** | Portal + admin dashboard (brief #6) | `app/views/` — captive portal (redirect target, login, signup+OTP, plan list, MoMo checkout with countdown, account, usage history, renew, voucher redeem, privacy notice) and admin (login + TOTP enrolment, dashboard tiles, users, plans, vouchers + CSV/PDF, payments, refunds, resellers, reports, settings, network-rule renderer, audit log) | 5 | 3 days |
 | **7** | Deployment guide (brief #7) | `docs/07-deployment.md` + `deploy/` — Vercel project, Supabase project, domain + Cloudflare DNS/TLS/WAF, how the cloud reaches the site given CGNAT (answer: it never does — outbound only), edge node provisioning script, UPS/power, Starlink dish placement, backup and restore runbooks, monitoring and alerting, cost sheet | 6 | 1 day |
 | **8** | Testing checklist + phased rollout (brief #8) | `docs/08-testing-and-rollout.md` + `docs/08-security.md` — unit/integration tests, a payment-simulator harness, on-site acceptance tests with real handsets, load and failure-injection drills (pull the Starlink cable, kill the edge node), security review against Act 843, and the MVP→full rollout schedule with go/no-go gates | 7 | 1 day |
 
-**~12 working days** of build, assuming decisions D1–D14 in `docs/decisions.md` are settled and
-hardware is on site.
+**~12 working days** of build, assuming the decisions in `docs/decisions.md` (D1–D23, of which
+D17 lists the ones still open) are settled and hardware is on site.
 
 ---
 
@@ -103,7 +103,15 @@ rewrite.
       DHCP option 114 with `force=yes`, RADIUS client + CoA, network segmentation, site
       capacity queue, rate-limit rendering with the rx/tx inversion handled and tested, and 48
       regression tests. Corrected eight Phase 1 assumptions — see §3.13.
-- [ ] Phase 3 — FreeRADIUS
+- [x] **Phase 3** — FreeRADIUS on the edge node: a generator that renders `clients.conf`,
+      the `wavly` virtual server, CoA destinations, the SQL module and the local operator
+      account from templates plus `/etc/wavly/edge.env`; `policy.d` for MAC normalisation,
+      the device roster, expiry and local fair-usage throttling; `bin/wv-coa` for the
+      out-of-band disconnects FreeRADIUS cannot originate itself; `db/migrations/0003` with
+      the SQL those policies call; a systemd override; and 45 tests. **Found and fixed a
+      schema bug that would have broken every login on the site** — `nasreload` was missing
+      from `0002` while both `simul_*` queries join it — plus three tools that were
+      silently checking less than they claimed. See `docs/04-freeradius.md` §4.13 and D18–D23.
 - [ ] Phase 4 — edge node / `syncd`
 - [ ] Phase 5 — backend
 - [ ] Phase 6 — portal + admin

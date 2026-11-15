@@ -1,0 +1,63 @@
+# -*- text -*-
+# =============================================================================
+# WAVLY WIFI - local accounts (mods-config/files/authorize)
+# =============================================================================
+# Install as /etc/freeradius/3.0/mods-config/files/authorize
+#
+# The `files` module runs BEFORE `sql` in sites-available/wavly. That ordering is
+# the point of this file.
+#
+# WHY IT EXISTS
+# If the edge Postgres is down - restarting, disk full, a migration half-applied -
+# then `sql` returns noop, there is no Cleartext-Password to check against, and
+# EVERY login is rejected. That is survivable for customers, but it means the
+# operator who is trying to fix the database cannot get online to read a runbook,
+# reach Supabase, or download a package. On a site whose only internet path is
+# this RADIUS server, that turns a bad hour into a bad day.
+#
+# This file is that escape hatch: one account, usable without the database.
+#
+# WHY IT IS SHAPED THIS WAY
+#   * Cleartext-Password is a PLACEHOLDER. A real one must never appear in git,
+#     so generate.mjs substitutes it from $EDGE_LOCAL_ADMIN_PASSWORD at render
+#     time. If that variable is unset the placeholder stays, and the placeholder
+#     is deliberately not a valid-looking password - so the account cannot be used
+#     by accident on a system that was provisioned without it.
+#   * It is NOT rate-profiled like a customer. It gets the staff profile's speed
+#     so an operator can actually run a speed test while diagnosing.
+#   * Simultaneous-Use is 2: enough for a laptop and a phone, low enough that a
+#     leaked credential is not a village-wide free-internet account.
+#   * Expiration is set. An emergency account that never expires is a standing
+#     backdoor; generate.mjs sets this from $EDGE_LOCAL_ADMIN_EXPIRES, and the
+#     runbook says to rotate it whenever it is used.
+#
+# WHAT MUST NEVER GO HERE
+# Customer accounts. Every customer credential comes from the database via syncd,
+# so that the cloud remains authoritative and a suspension actually takes effect.
+# A customer added here could not be suspended, would not be billed, and would not
+# appear in any usage report - and you would find out when they complained.
+# =============================================================================
+
+wavly-local-admin	Cleartext-Password := "@@LOCAL_ADMIN_PASSWORD@@",
+			Expiration := "@@LOCAL_ADMIN_EXPIRES@@",
+			Simultaneous-Use := 2,
+			Mikrotik-Rate-Limit := "@@LOCAL_ADMIN_RATE_LIMIT@@",
+			Mikrotik-Address-List := "wv-staff",
+			Acct-Interim-Interval := 300,
+			Session-Timeout := 28800,
+			Reply-Message := "Wavly local operator account. Rotate this password after use."
+
+# -----------------------------------------------------------------------------
+# Uncomment ONLY while diagnosing, and comment out again afterwards.
+#
+# A catch-all that accepts any username makes it impossible to tell whether a
+# customer's problem is authentication or something else - which is the first
+# question you need answered. It is here because it is sometimes the right answer,
+# not because it should be on.
+#
+# The password is deliberately a placeholder rather than something guessable: if
+# this is uncommented without being edited, logins fail visibly instead of quietly
+# handing out internet to anyone who tries "wavly".
+# -----------------------------------------------------------------------------
+#DEFAULT	Cleartext-Password := "SET_A_PASSWORD_HERE",
+#		Reply-Message := "DIAGNOSTIC MODE - all logins accepted. Turn this off."

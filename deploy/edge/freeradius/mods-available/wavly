@@ -1,0 +1,64 @@
+# -*- text -*-
+# =============================================================================
+# WAVLY WIFI - module instances
+# =============================================================================
+# Install as /etc/freeradius/3.0/mods-available/wavly, then:
+#     ln -s ../mods-available/wavly /etc/freeradius/3.0/mods-enabled/wavly
+#
+# These are instances of stock modules configured for Wavly, kept in one file so
+# the whole set can be enabled or disabled together.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Called by wavly-normalize-mac when a request arrives without a usable
+# Calling-Station-Id.
+#
+# This is a CANARY, not a debug log. The device roster policy is the control that
+# stops account sharing, and it cannot run without a MAC. If a router firmware
+# upgrade or a config change stops MikroTik sending Calling-Station-Id, device
+# binding silently stops working site-wide while every login still succeeds -
+# which is exactly the kind of failure that goes unnoticed for a month. A
+# dedicated file makes it a one-line check:
+#     wc -l /var/log/freeradius/wavly-mac-missing.log
+# Anything non-zero on a hotspot that was working yesterday is a problem.
+# -----------------------------------------------------------------------------
+linelog wavly-mac-missing {
+	filename = ${logdir}/wavly-mac-missing.log
+	permissions = 0640
+	format = "%t user=%{%{request:User-Name}:-<none>} nas=%{%{packet:NAS-IP-Address}:-<none>} raw-csid='%{%{request:Calling-Station-Id}:-<absent>}'"
+}
+
+# -----------------------------------------------------------------------------
+# Accounting detail files.
+#
+# Redundant with SQL on purpose. If Postgres is down, restarting, or the disk is
+# full when an Accounting-Request arrives, `sql` fails and that usage record is
+# gone - which is revenue lost with no way to reconstruct it. The detail file is
+# append-only on disk and is written BEFORE the sql module runs, so the record
+# survives and can be replayed later with radsqlclient.
+#
+# On a machine whose whole purpose is to keep billing correct through an outage,
+# this is the cheapest insurance available.
+#
+# REPLAYING: there is no "radsqlclient" binary. A detail file is reprocessed by
+# adding a detail listener, which feeds the stored packets back through the
+# accounting section as if they had just arrived:
+#
+#     listen {
+#         type = detail
+#         filename = ${logdir}/wavly-detail/detail-*
+#         load_factor = 10
+#     }
+#
+# That listener is NOT enabled in sites-available/wavly, because a server that
+# replays old accounting on every boot would re-insert rows. Enable it in a
+# separate one-off virtual server only when you actually need to catch up, then
+# disable it again. The `wavly_synced_at` column and syncd's origin_id
+# idempotency are what make a replay safe rather than double-counting.
+# -----------------------------------------------------------------------------
+detail wavly-detail {
+	filename = ${logdir}/wavly-detail/detail-%Y%m%d
+	permissions = 0640
+	locking = yes
+	log_packet_header = yes
+}

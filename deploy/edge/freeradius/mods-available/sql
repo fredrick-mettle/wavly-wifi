@@ -1,0 +1,119 @@
+# -*- text -*-
+# =============================================================================
+# WAVLY WIFI - sql module (PostgreSQL, edge node)
+# =============================================================================
+# Install as /etc/freeradius/3.0/mods-available/sql, then:
+#     ln -s ../mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
+#
+# This file is a TEMPLATE. Its placeholder tokens (uppercase names wrapped in
+# double-at signs) are substituted by deploy/edge/generate.mjs from
+# /etc/wavly/edge.env. Never commit the rendered version - it contains the edge
+# database password.
+#
+# Note the deliberate wording above: the generator treats ANY token-shaped string
+# left in the output as a fatal error, so even a placeholder name mentioned in
+# prose aborts the run. That strictness is the point - a misspelled token would
+# otherwise be substituted nowhere and leave something like
+# `password = "<misspelled token>"` in the file, which is a perfectly valid
+# FreeRADIUS string. The server would start, fail to reach the database, and give
+# no obvious cause.
+#
+# WHY THE DATABASE IS LOCAL AND NOT SUPABASE
+# A satellite round trip is 400-900 ms. MikroTik's RADIUS timeout is ~3000 ms as
+# configured, but a login that takes 900 ms of that budget on every
+# Access-Request is a login that fails whenever Starlink has a bad minute - and
+# the failure mode is "paying customers cannot reconnect during an outage",
+# which is the worst possible time to be unavailable. Every authorization
+# decision is therefore made against local Postgres. The cloud is authoritative
+# for billing; the edge is authoritative for access.
+# =============================================================================
+
+sql {
+	# PostgreSQL. The driver and dialect must agree: rlm_sql_postgresql with
+	# dialect "postgresql" selects mods-config/sql/main/postgresql/queries.conf,
+	# which is the file we patched for password redaction.
+	dialect = "postgresql"
+	driver = "rlm_sql_postgresql"
+
+	server = "@@EDGE_DB_HOST@@"
+	port = @@EDGE_DB_PORT@@
+	login = "@@EDGE_DB_USER@@"
+	password = "@@EDGE_DB_PASSWORD@@"
+	radius_db = "@@EDGE_DB_NAME@@"
+
+	# ---------------------------------------------------------------------
+	# read_clients is deliberately OFF, which deviates from the common
+	# recipe of loading clients from the `nas` table.
+	#
+	# With read_clients=yes the shared secret lives in a database column. A
+	# pg_dump of the edge node - which we take nightly and copy off-site -
+	# would then contain the one credential that lets anyone on the LAN
+	# authenticate any user they like, and the backup becomes the most
+	# sensitive file in the business. Keeping clients in clients.conf, whose
+	# secret is substituted from /etc/wavly/edge.env (mode 0600) at generate
+	# time, means a database dump leaks no RADIUS secret at all.
+	#
+	# The `nas` table still exists and is still populated: it records NAS
+	# inventory, heartbeats and CoA targets. It just is not the source of
+	# truth for secrets.
+	#
+	# Trade-off accepted: adding a second router means regenerating
+	# clients.conf and reloading FreeRADIUS, instead of inserting a row. On a
+	# one-router-per-village network that is a rare event, and it is a change
+	# that ought to require a human anyway.
+	# ---------------------------------------------------------------------
+	read_clients = no
+	client_table = "nas"
+
+	# Stale sessions from a NAS that rebooted without sending Accounting-Stop.
+	# On an unreliable power supply this happens; without cleanup those rows
+	# count against Simultaneous-Use forever and eventually lock the customer
+	# out of their own account.
+	delete_stale_sessions = yes
+
+	# Log only real problems. With sqltrace on, every query and its bind
+	# parameters go to the log - which would put customer usernames in
+	# plaintext log files for no operational benefit.
+	sqltrace = no
+	num_sql_socks = 5
+	connect_retry_interval = 60
+
+	# Colons matter here: MikroTik sends Calling-Station-Id as AA:BB:CC:DD:EE:FF
+	# and MAC-authenticated usernames are MAC addresses. A missing ':' would
+	# make %{SQL-User-Name} mangle them into something that matches no row,
+	# presenting as "the customer exists but cannot log in".
+	safe-characters = "@abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_: /@"
+
+	# Table names, matching db/migrations/0002_edge_radius.sql.
+	acct_table1 = "radacct"
+	acct_table2 = "radacct"
+	postauth_table = "radpostauth"
+	authcheck_table = "radcheck"
+	authreply_table = "radreply"
+	groupcheck_table = "radgroupcheck"
+	groupreply_table = "radgroupreply"
+	usergroup_table = "radusergroup"
+
+	# ---------------------------------------------------------------------
+	# Connection pool. Sized for one village, not for a datacentre.
+	#
+	# max must stay comfortably below Postgres' max_connections minus what
+	# syncd and the backup job need. The edge node is a small machine; if
+	# FreeRADIUS exhausts the connection limit the symptom is not "RADIUS is
+	# slow" but "syncd cannot write usage records", which means revenue data
+	# is lost while logins still work. That ordering is the opposite of what
+	# you would notice first.
+	# ---------------------------------------------------------------------
+	pool {
+		start = 5
+		min = 3
+		max = 10
+		spare = 3
+		uses = 0
+		retry_delay = 30
+		lifetime = 0
+		idle_timeout = 60
+	}
+
+	$INCLUDE -${confdir}/mods-config/sql/main/${dialect}/queries.conf
+}

@@ -1,0 +1,43 @@
+# -*- text -*-
+# =============================================================================
+# GENERATED FILE - do not edit, and do not commit the rendered version.
+# =============================================================================
+# Rendered by deploy/edge/generate.mjs from:
+#   * db/seed/0001_core_defaults.sql  (nas_devices rows -> which routers exist)
+#   * /etc/wavly/edge.env             (the shared secrets)
+#
+# Install as /etc/freeradius/3.0/clients.conf  (root:freerad, mode 0640)
+#
+# The secret is substituted at generation time from an environment variable named
+# by nas_devices.shared_secret_ref - e.g. "edge:env:RADIUS_SECRET_NKAWIE01" means
+# read $RADIUS_SECRET_NKAWIE01. That column is a POINTER, never the secret, so a
+# database dump (which we take nightly and copy off-site) contains no credential
+# that would let someone authenticate any user they like.
+#
+# read_clients is OFF in mods-available/sql, so this file is the only source of
+# clients. Adding a router means regenerating it and reloading FreeRADIUS - a
+# deliberate friction, since it is a change that ought to involve a human.
+#
+# The CoA destinations (home_server sections) are NOT here - they are generated
+# into sites-available/originate-coa, which is where upstream puts them and which
+# each client's `coa_server` points at. Keeping them per-NAS rather than in one
+# shared pool matters: a pool of type fail-over sends to the first ALIVE member,
+# which for two routers would be the wrong one half the time.
+# =============================================================================
+
+@@CLIENTS@@
+
+# -----------------------------------------------------------------------------
+# localhost, for radtest and bin/wv-coa self-tests only.
+#
+# The secret here is "testing123", the FreeRADIUS default, and that is acceptable
+# ONLY because the listener is bound to 127.0.0.1. If you ever change that
+# ipaddr, change this secret too - otherwise anyone who has read the FreeRADIUS
+# source can authenticate as any customer.
+# -----------------------------------------------------------------------------
+client localhost {
+	ipaddr = 127.0.0.1
+	secret = testing123
+	require_message_authenticator = no
+	nas_type = other
+}

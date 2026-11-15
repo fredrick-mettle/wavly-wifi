@@ -100,6 +100,18 @@ create index if not exists radacct_active_session_idx on radacct (acctuniqueid) 
 create index if not exists radacct_bulk_close on radacct (nasipaddress, acctstarttime) where acctstoptime is null;
 -- radacct_start_user_idx backs common statistics queries.
 create index if not exists radacct_start_user_idx on radacct (acctstarttime, username);
+-- Used by simul_verify_query, which looks up open sessions by user on a NAS.
+create index if not exists radacct_active_user_idx on radacct (acctsessionid, username, nasipaddress);
+-- Used by the stop query and by usage uplink sweeps over closed sessions.
+create index if not exists radacct_stop_user_idx on radacct (acctstoptime, username);
+-- NOTE: the official schema also carries a COMMENTED-OUT
+--   create unique index radacct_whoson on radacct (acctstarttime, nasipaddress);
+-- It stays out deliberately. A UNIQUE index there would reject the accounting
+-- INSERT whenever two customers start a session in the same second on the same
+-- NAS - which on an 80-user site is a matter of when, not if - silently losing
+-- usage records and therefore revenue.
+-- radacct_session_idx is likewise omitted: the UNIQUE constraint on acctuniqueid
+-- already provides it.
 create index if not exists radacct_class_idx on radacct (class);
 
 -- Wavly additions. These are OURS, appended after the stock columns so an
@@ -266,13 +278,48 @@ comment on table nas is
 -- radpostauth — every authentication outcome
 -- ----------------------------------------------------------------------------
 create table if not exists radpostauth (
-  id       bigserial primary key,
-  username text not null,
-  pass     text,
-  reply    text,
-  authdate timestamp with time zone not null default now()
+  id                bigserial primary key,
+  username          text not null,
+  -- NEVER a real password. The stock FreeRADIUS post-auth query writes
+  -- '%{%{User-Password}:-%{Chap-Password}}' here, i.e. the submitted credential in
+  -- cleartext. Under Act 843 that is unnecessary processing of a secret, and a
+  -- leaked edge dump would then expose every customer's Wi-Fi password. Our
+  -- queries.conf override writes the literal string 'REDACTED'. The column is
+  -- kept because the stock schema has it and tooling may expect it.
+  pass              text,
+  reply             text,
+  calledstationid   text,
+  callingstationid  text,
+  authdate          timestamp with time zone not null default now(),
+  class             text
 );
 create index if not exists radpostauth_username on radpostauth (username, authdate desc);
+create index if not exists radpostauth_class_idx on radpostauth (class);
+
+-- ---------------------------------------------------------------------------
+-- nasreload — part of the official FreeRADIUS PostgreSQL schema, and the table
+-- Phase 1 omitted. Both simul_count_query and simul_verify_query LEFT JOIN
+-- against it, and those are precisely the queries that enforce Simultaneous-Use
+-- (our max_simultaneous_devices / device-slot limit). Without the table every
+-- Access-Request from a plan with a device limit raises a SQL error inside the
+-- session section.
+--
+-- Semantics: when a NAS reboots it loses its session state, so open radacct rows
+-- for that NAS are stale. Recording the reload time lets the simul_* queries
+-- ignore sessions that started before it. A row is written by the edge node when
+-- it detects a NAS restart; absence of a row is handled by the `OR ReloadTime IS
+-- NULL` branch in the stock queries.
+-- ---------------------------------------------------------------------------
+create table if not exists nasreload (
+  nasipaddress inet primary key,
+  reloadtime   timestamp with time zone not null
+);
+
+comment on table nasreload is
+  'Official FreeRADIUS table. Records when each NAS last reloaded so the '
+  'simul_count_query / simul_verify_query joins can ignore sessions that were '
+  'open before the reboot. Required whenever `session { sql }` is enabled, which '
+  'is how Simultaneous-Use (the per-customer device limit) is enforced.';
 create index if not exists radpostauth_reply    on radpostauth (reply, authdate desc);
 create index if not exists radpostauth_brin     on radpostauth using brin (authdate);
 

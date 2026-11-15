@@ -1,0 +1,233 @@
+# -*- text -*-
+# =============================================================================
+# WAVLY WIFI - virtual server
+# =============================================================================
+# Install as /etc/freeradius/3.0/sites-available/wavly, then:
+#     ln -s ../sites-available/wavly /etc/freeradius/3.0/sites-enabled/wavly
+#     rm -f /etc/freeradius/3.0/sites-enabled/default
+#
+# WHY A NEW SITE INSTEAD OF EDITING `default`
+# The stock default site is ~1300 lines and loads EAP, LDAP, Perl, Python,
+# Unix passwords, digest auth and a dozen modules this deployment will never use.
+# Every one of those is an attack surface on a machine sitting on an untrusted LAN
+# full of people with a financial incentive to get free internet. This server
+# loads only what a MikroTik hotspot actually sends.
+#
+# WHAT IS DELIBERATELY ABSENT
+#   * eap        - the hotspot uses http-chap and http-pap. No 802.1X, no PEAP.
+#                  Leaving EAP loaded means an open TLS handshake endpoint on the
+#                  LAN for no benefit.
+#   * ldap, unix - there are no local or directory accounts. Every credential
+#                  comes from Postgres via syncd. `unix` in particular would let
+#                  anyone with a shell account on the edge node log onto the
+#                  Wi-Fi.
+#   * proxy      - no realms, no upstream RADIUS. `suffix` is therefore omitted
+#                  too: our usernames are phone numbers and voucher codes, and
+#                  treating '@' as a realm separator would only create a way for
+#                  a crafted username to be routed somewhere unexpected.
+#   * a CoA listener. We ORIGINATE CoA (see below); we never receive it.
+# =============================================================================
+
+server wavly {
+
+	# -------------------------------------------------------------------------
+	# Listeners. Bound to the management network only.
+	#
+	# The edge node has two addresses: 192.168.88.10 on the management network
+	# (where the router is) and nothing on the hotspot network. Binding to *
+	# would be harmless today, but if the edge node is ever given a second
+	# interface, * would expose an authentication service to every customer.
+	# Naming the address makes that impossible by accident.
+	# -------------------------------------------------------------------------
+	listen {
+		type = auth
+		ipaddr = @@EDGE_LISTEN_ADDRESS@@
+		port = @@RADIUS_AUTH_PORT@@
+	}
+
+	listen {
+		type = acct
+		ipaddr = @@EDGE_LISTEN_ADDRESS@@
+		port = @@RADIUS_ACCT_PORT@@
+	}
+
+	# No `listen { type = coa }`. CoA is sent TO the router on its port 3799 by
+	# `update coa` below and by deploy/edge/bin/wv-coa. FreeRADIUS receiving CoA
+	# would be a second remote-control channel onto this box, for no purpose.
+
+	# =========================================================================
+	# AUTHORIZE
+	# =========================================================================
+	authorize {
+		# Normalise CHAP/MS-CHAP into Auth-Type before anything else reads it.
+		chap
+		mschap
+
+		# Local emergency accounts, BEFORE sql. See mods-config/files/authorize.
+		# This is the degradation path: if Postgres is down the site cannot
+		# authorize normal customers, but an operator can still get online to
+		# diagnose it. A RADIUS server that cannot authenticate anyone when its
+		# own database is restarting is very hard to debug remotely.
+		files
+
+		# The `-` makes a sql failure "soft": it returns noop instead of failing
+		# the request outright, so the reject that follows is a clean
+		# Access-Reject rather than a server error the NAS may interpret as
+		# "try again forever".
+		#
+		# This one call loads EVERYTHING: Cleartext-Password and Expiration from
+		# radcheck, group memberships from radusergroup, then the plan's reply
+		# attributes (Mikrotik-Rate-Limit, Simultaneous-Use, ...) and check
+		# attributes (Wavly-Data-Cap, Wavly-Fup-Rate, ...) from radgroupreply and
+		# radgroupcheck. See the contract table at the top of policy.d/wavly.
+		-sql
+
+		# Validate and normalise Calling-Station-Id. This is also a SQL-injection
+		# control: only a value matching a strict MAC pattern is ever
+		# interpolated into the query below.
+		wavly-normalize-mac
+
+		# Expiry, with a message a customer can act on.
+		wavly-expiry
+
+		# Device roster. This is what actually stops one subscription being shared
+		# around a village - Simultaneous-Use only catches sessions that overlap.
+		wavly-device-policy
+
+		# Sets Auth-Type = PAP when a User-Password arrived and nothing else has
+		# claimed it. Placed last so the checks above can reject before we ever
+		# commit to authenticating.
+		pap
+	}
+
+	# =========================================================================
+	# AUTHENTICATE
+	# =========================================================================
+	authenticate {
+		Auth-Type PAP {
+			pap
+		}
+		Auth-Type CHAP {
+			chap
+		}
+		Auth-Type MS-CHAP {
+			mschap
+		}
+		# Nothing else. In particular there is no `unix` and no `eap`, so there
+		# is no path by which a local system account becomes a Wi-Fi credential.
+	}
+
+	# =========================================================================
+	# PREACCT
+	# =========================================================================
+	preacct {
+		preprocess
+
+		# Generates Acct-Unique-Session-Id, which the sql accounting queries use
+		# as their key. Without it, two sessions that a NAS gives the same
+		# Acct-Session-Id (which MikroTik does after a reboot) collide in
+		# radacct and one customer's usage is attributed to another.
+		acct_unique
+
+		files
+	}
+
+	# =========================================================================
+	# ACCOUNTING
+	# =========================================================================
+	accounting {
+		# Written first, on disk, before anything that can fail. This is the
+		# revenue-protection copy: if Postgres is down when the record arrives,
+		# the detail file still has it.
+		wavly-detail
+
+		-sql
+
+		# Fair usage, on interim updates only.
+		#
+		# This is the LOCAL enforcement path and it is the one that matters,
+		# because the cloud path (upload usage -> compute -> push group -> CoA)
+		# has a satellite link in the middle of it. Comparing here and issuing
+		# `update coa` means a customer who crosses their cap is throttled within
+		# one accounting interval, with no WAN involved.
+		#
+		# `update coa` is only valid in response to a received request - it cannot
+		# fire on a wall clock. That is why SUBSCRIPTION EXPIRY needs syncd and
+		# bin/wv-coa instead: nothing arrives from the NAS at the moment a
+		# subscription lapses, so there is no request to hang a CoA on.
+		if (&request:Acct-Status-Type == 'Interim-Update') {
+			wavly-fup-check
+		}
+
+		attr_filter.accounting_response
+	}
+
+	# =========================================================================
+	# SESSION
+	# =========================================================================
+	session {
+		# Enforces Simultaneous-Use by counting open radacct rows. This is the
+		# section that needs the `nasreload` table: simul_count_query and
+		# simul_verify_query both LEFT JOIN it, and Phase 1 shipped the edge
+		# schema without it, which would have raised a SQL error on every
+		# Access-Request from a plan with a device limit.
+		-sql
+	}
+
+	# =========================================================================
+	# POST-AUTH
+	# =========================================================================
+	post-auth {
+		# -------------------------------------------------------------
+		# Message-Authenticator in every reply. DO NOT REMOVE.
+		#
+		# RouterOS silently DROPS an Access-Accept or Access-Reject that does
+		# not carry a Message-Authenticator. Its log says
+		#     radius,debug  received packet ... with missing message auth,
+		#     dropping
+		# and the customer sees
+		#     login failed: RADIUS server is not responding
+		# while FreeRADIUS logs "Login OK" and looks perfectly healthy.
+		#
+		# That combination - our side reporting success, the router reporting a
+		# timeout - is the single most confusing failure in this whole stack, and
+		# it takes down every login on the site. Initialising the attribute to
+		# zero here makes the server compute the real HMAC just before the packet
+		# goes on the wire.
+		#
+		# FreeRADIUS >= 3.2.5 does this on its own as the Blast-RADIUS
+		# (CVE-2024-3596) mitigation, and Debian may ship either side of that
+		# line. Setting it explicitly costs nothing and removes the dependency on
+		# which point release is installed. The guard means we never emit two.
+		# -------------------------------------------------------------
+		if (!&reply:Message-Authenticator) {
+			update reply {
+				&Message-Authenticator := 0x00
+			}
+		}
+
+		# Writes radpostauth. Our queries.conf override stores the literal
+		# 'REDACTED' instead of the submitted password, plus Called-Station-Id
+		# and Calling-Station-Id so a failed-auth row is actionable.
+		-sql
+
+		# Tell the cloud. Queued through sync_outbox so an outage delays the
+		# event rather than losing it.
+		%{sql: SELECT wavly_queue('auth_event', jsonb_build_object('type','post_auth','username','%{SQL-User-Name}','reply','%{reply:Packet-Type}','mac','%{control:Wavly-Mac}','nas','%{packet:NAS-IP-Address}','session','%{%{request:Acct-Session-Id}:-}'))}
+
+		Post-Auth-Type Reply {
+			# Access-Accept. Kept as a hook: reply_log is useful when a
+			# customer swears they were never given the speed they paid for,
+			# because it records the exact Mikrotik-Rate-Limit we sent.
+			reply_log
+		}
+
+		Post-Auth-Type Reject {
+			-sql
+			reply_log
+		}
+	}
+
+	# No pre-proxy / post-proxy: we never proxy, and `update coa` is explicitly
+	# not permitted in those sections anyway.
+}

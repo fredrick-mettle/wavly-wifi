@@ -11,6 +11,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boot, check } from '../scripts/check-schema.mjs';
@@ -76,19 +77,41 @@ test('does not cry wolf on a correct schema', () => {
 // ---------------------------------------------------------------------------
 // The real schema. This is the assertion that matters in CI.
 // ---------------------------------------------------------------------------
-const REAL = [
-  'db/migrations/0001_initial_cloud.sql',
-  'db/migrations/0002_edge_radius.sql',
-  'db/seed/0001_core_defaults.sql',
-].map((f) => resolve(REPO, f));
+// Discovered, not hardcoded. A fixed list here is the same bug the checker had:
+// adding db/migrations/0003 made both the checker and its tests silently skip it,
+// while every run still reported "No structural errors found".
+const discover = (dir) => {
+  try {
+    return readdirSync(resolve(REPO, dir))
+      .filter((n) => n.endsWith('.sql'))
+      .sort()
+      .map((n) => resolve(REPO, dir, n));
+  } catch { return []; }
+};
+const REAL = [...discover('db/migrations'), ...discover('db/seed')];
+
+test('the checker sees every SQL file in the repository', () => {
+  const expected = [
+    ...discover('db/migrations'),
+    ...discover('db/seed'),
+  ];
+  assert.ok(expected.length >= 4, `expected >=4 SQL files, found ${expected.length}`);
+  assert.deepEqual(REAL, expected);
+  // Specifically: the Phase 3 logic migration must be in scope. A checker that
+  // skips it reports success while checking nothing.
+  assert.ok(REAL.some((f) => f.endsWith('0003_edge_radius_logic.sql')),
+    'db/migrations/0003_edge_radius_logic.sql is not being checked');
+});
 
 test('the real Wavly WiFi schema is structurally sound', () => {
   const { errors, stats } = check(REAL);
   assert.deepEqual(errors, [], `schema errors:\n  ${errors.join('\n  ')}`);
 
   // Guard rails: if these numbers move unexpectedly, a table or index was lost.
-  assert.equal(stats.tables, 57, 'expected 42 cloud tables + 15 edge tables');
-  assert.equal(stats.views, 3, 'expected v_radius_authorization, v_customer_account, v_active_subscribers');
+  assert.equal(stats.tables, 58, 'expected 42 cloud tables + 16 edge tables');
+  assert.equal(stats.views, 4,
+    'expected v_radius_authorization, v_customer_account, v_active_subscribers, wavly_open_sessions');
+  assert.ok(stats.functions >= 12, `expected >=12 functions, got ${stats.functions}`);
   assert.ok(stats.fkCount >= 100, `expected >=100 FK references, got ${stats.fkCount}`);
   assert.ok(stats.indexes >= 80, `expected >=80 indexes, got ${stats.indexes}`);
 });
@@ -105,5 +128,10 @@ test('cloud schema does not leak RADIUS tables, edge schema does not leak busine
   // Re-check each file in isolation and look at what each one defines.
   const edge = check([REAL[1]]);
   assert.deepEqual(edge.errors, [], `edge schema errors:\n  ${edge.errors.join('\n  ')}`);
-  assert.equal(edge.stats.tables, 15, 'expected 8 stock FreeRADIUS tables + 7 Wavly edge tables');
+  // 9 stock FreeRADIUS tables (radacct, radcheck, radreply, radgroupcheck,
+  // radgroupreply, radusergroup, nas, radpostauth, nasreload) + 7 Wavly edge
+  // tables. nasreload was missing until Phase 3: it is the official 9th table and
+  // both simul_* queries join it, so without it Simultaneous-Use enforcement
+  // raises a SQL error on every Access-Request.
+  assert.equal(edge.stats.tables, 16, 'expected 9 stock FreeRADIUS tables + 7 Wavly edge tables');
 });

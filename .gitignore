@@ -11,6 +11,12 @@ edge.env
 # RADIUS shared secrets and router config exports can contain them
 deploy/secrets/
 deploy/**/*secret*
+# Rendered FreeRADIUS config: holds the edge DB password and the RADIUS shared
+# secret. The TEMPLATES in deploy/edge/freeradius/ are committed; this output is
+# not. It also writes its own .gitignore, but that only exists after a successful
+# run - this rule covers the first run and any custom --out.
+deploy/edge/local/
+*.env.local
 
 # --- node --------------------------------------------------------------------
 node_modules/

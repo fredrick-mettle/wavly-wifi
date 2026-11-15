@@ -1,0 +1,222 @@
+# -*- text -*-
+# =============================================================================
+# WAVLY WIFI - policies
+# =============================================================================
+# Install as /etc/freeradius/3.0/policy.d/wavly
+#
+# -----------------------------------------------------------------------------
+# THE CONTRACT WITH syncd (Phase 4)
+# -----------------------------------------------------------------------------
+# These policies read control attributes that the edge sync daemon writes into
+# the local Postgres. If syncd writes them anywhere else, or with a different
+# operator, the policies below silently do nothing - so this table is the
+# interface definition between the two components and changing it is a breaking
+# change on both sides.
+#
+#   attribute              table           op   scope      meaning
+#   ---------------------- --------------- ---- ---------- -------------------------
+#   Cleartext-Password     radcheck        :=   per user   the activation credential
+#   Expiration             radcheck        :=   per user   subscription expires_at
+#   Simultaneous-Use       radgroupreply   :=   per plan   max_simultaneous_devices
+#   Mikrotik-Rate-Limit    radgroupreply   :=   per plan   rendered rate profile
+#   Mikrotik-Address-List  radgroupreply   :=   per plan   session address list
+#   Acct-Interim-Interval  radgroupreply   :=   per plan   accounting interval
+#   Wavly-Data-Cap         radgroupcheck   :=   per plan   cap, BYTES (integer64)
+#   Wavly-Fup-Rate         radgroupcheck   :=   per plan   rate limit to CoA at FUP
+#   Wavly-Used-Baseline    radcheck        :=   per user   bytes used before now
+#   Wavly-Mac-Binding      radcheck        :=   per user   1 = reject unknown MACs
+#   Wavly-Max-Devices      radcheck        :=   per user   registered-device roster cap
+#   Wavly-Fup-Active       radcheck        :=   per user   1 = FUP already applied
+#
+# The check/reply table split is NOT arbitrary. rlm_sql puts `:=` items from
+# radcheck and radgroupcheck into &control:, and items from radreply and
+# radgroupreply into &reply:. A quota cap written to radgroupreply lands in
+# &reply: and would be SENT TO THE ROUTER instead of being visible to the FUP
+# policy - so the cap check would read an empty attribute and never fire.
+#
+# Group naming: radusergroup.groupname is the RATE PROFILE name (p-12-6,
+# fup-4-2, suspended), not the plan name. Changing the speed of 80 customers is
+# then one UPDATE plus 80 CoA packets, not 80 row rewrites.
+#
+# FUP priority: the plan group is at radusergroup.priority 1 and the FUP group at
+# 10. group_membership_query is `ORDER BY priority` ascending and later `:=`
+# reply items win, so the FUP rate limit overrides the plan's. Clearing FUP is a
+# single DELETE and never touches the purchased entitlement.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# wavly-normalize-mac
+#
+# Validates and normalises Calling-Station-Id into &control:Wavly-Mac.
+#
+# THIS IS A SQL-INJECTION CONTROL, NOT COSMETIC. The device policy below
+# interpolates the MAC into a SQL function call. %{SQL-User-Name} is sanitised
+# against the sql module's safe-characters list, but Calling-Station-Id is NOT -
+# it arrives from the NAS as an opaque string, and a crafted value containing a
+# quote would be interpolated straight into the query. A NAS is normally
+# trustworthy, but the whole point of the edge node is that it is the security
+# boundary for an untrusted LAN, and "the router would never send that" is not a
+# control.
+#
+# So: match a strict MAC pattern first, and only interpolate a value that
+# consists solely of hex digits and separators. Anything else is treated as
+# "no MAC", which fails open to the cloud-enforced roster rather than failing
+# closed and locking out every customer with an unusual NAS.
+# -----------------------------------------------------------------------------
+wavly-normalize-mac = policy {
+	if (&request:Calling-Station-Id =~ /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/ ) {
+		update control {
+			# upper() so the roster key is stable. MikroTik is configured with
+			# radius-mac-format=XX:XX:XX:XX:XX:XX, so this should already be
+			# upper case with colons - normalising anyway, because a customer
+			# who cannot log in due to letter case is a support call with no
+			# obvious cause.
+			&Wavly-Mac := "%{toupper:%{request:Calling-Station-Id}}"
+		}
+		# RouterOS and some clients use hyphens; the roster uses colons.
+		update control {
+			&Wavly-Mac := "%{sql: SELECT replace('%{control:Wavly-Mac}', '-', ':')}"
+		}
+	}
+	else {
+		# Deliberately not a reject. Log it: a NAS that stops sending MACs would
+		# otherwise silently disable device binding site-wide.
+		linelog wavly-mac-missing
+		update control {
+			&Wavly-Mac := ""
+		}
+	}
+}
+
+
+# -----------------------------------------------------------------------------
+# wavly-device-policy
+#
+# Enforces the per-account device roster. Simultaneous-Use only limits sessions
+# that OVERLAP, so two people alternating on one subscription never trip it and
+# neither does a household sharing an account in shifts. This is the control that
+# actually stops sharing.
+#
+# One SQL round trip. The decision function registers unseen devices as 'pending'
+# as a side effect, which is what lets a customer self-approve a new phone from
+# the portal instead of calling you.
+# -----------------------------------------------------------------------------
+wavly-device-policy = policy {
+	if (&control:Wavly-Mac) {
+		update control {
+			&Wavly-Device-Decision := "%{sql: SELECT wavly_check_device('%{SQL-User-Name}', '%{control:Wavly-Mac}', coalesce(nullif('%{control:Wavly-Max-Devices}', '')::int, 0), coalesce(nullif('%{control:Wavly-Mac-Binding}', '')::int, 0) <> 0, nullif('%{packet:NAS-IP-Address}', '')::inet)}"
+		}
+
+		if (&control:Wavly-Device-Decision == 'reject_blocked') {
+			update reply {
+				&Reply-Message := "This device has been blocked on your Wavly WiFi account. Contact support."
+			}
+			# Queued, not dropped: a blocked device retrying is either a
+			# mistake worth undoing or someone probing an account.
+			%{sql: SELECT wavly_queue('security', jsonb_build_object('type','device_blocked','username','%{SQL-User-Name}','mac','%{control:Wavly-Mac}','nas','%{packet:NAS-IP-Address}'))}
+			reject
+		}
+
+		elsif (&control:Wavly-Device-Decision == 'reject_bound') {
+			update reply {
+				&Reply-Message := "Your account is locked to registered devices. Add this device from your Wavly WiFi account page, then try again."
+			}
+			%{sql: SELECT wavly_queue('security', jsonb_build_object('type','device_unregistered','username','%{SQL-User-Name}','mac','%{control:Wavly-Mac}','nas','%{packet:NAS-IP-Address}'))}
+			reject
+		}
+
+		elsif (&control:Wavly-Device-Decision == 'reject_limit') {
+			update reply {
+				&Reply-Message := "Your plan's device limit is reached. Remove a device from your Wavly WiFi account page, or upgrade."
+			}
+			%{sql: SELECT wavly_queue('security', jsonb_build_object('type','device_limit','username','%{SQL-User-Name}','mac','%{control:Wavly-Mac}','count','%{sql:SELECT wavly_device_count('%{SQL-User-Name}')}'))}
+			reject
+		}
+
+		elsif (&control:Wavly-Device-Decision == 'allow_new') {
+			# Let through, but tell the cloud so the customer sees it in the
+			# portal and can name or remove it.
+			%{sql: SELECT wavly_queue('device_seen', jsonb_build_object('username','%{SQL-User-Name}','mac','%{control:Wavly-Mac}','nas','%{packet:NAS-IP-Address}'))}
+		}
+
+		# 'allow' needs no action: known device, already tracked.
+	}
+}
+
+
+# -----------------------------------------------------------------------------
+# wavly-expiry
+#
+# The stock `expiration` module reads &control:Expiration (written by syncd from
+# subscriptions.expires_at) and rejects when it is in the past. Its default reply
+# is a bare Access-Reject, which to a customer looks identical to "the internet is
+# broken" - so we keep the module's date parsing and replace the message.
+#
+# This is the BACKSTOP, not the primary mechanism. Expiry normally arrives as a
+# CoA disconnect from syncd the moment the subscription lapses. This catches the
+# case where CoA failed or the customer simply stayed connected: at the next
+# re-authentication they are refused and told why.
+# -----------------------------------------------------------------------------
+wavly-expiry = policy {
+	expiration
+	if (reject) {
+		update reply {
+			&Reply-Message := "Your Wavly WiFi plan has expired. Renew at portal.wavlywifi.com or with a voucher code to get back online."
+		}
+		%{sql: SELECT wavly_queue('auth_event', jsonb_build_object('type','expired','username','%{SQL-User-Name}','mac','%{control:Wavly-Mac}'))}
+		reject
+	}
+}
+
+
+# -----------------------------------------------------------------------------
+# wavly-fup-check
+#
+# Fair-usage enforcement, run from the accounting section on every interim
+# update. This is the LOCAL fast path and it exists because the cloud path
+# depends on the satellite link:
+#
+#   cloud-only: usage uploads -> cloud computes -> pushes group membership ->
+#               syncd applies -> CoA. Every hop can be delayed by an outage, and
+#               the customer keeps downloading at full speed meanwhile.
+#   local:      interim update -> compare -> CoA. One host, no WAN involved.
+#
+# Used = baseline + this session. The baseline is what the cloud had already
+# accounted for before the current session started, so a reconnect does not reset
+# the counter.
+#
+# KNOWN AND ACCEPTED LEAK: if a customer reconnects before syncd has refreshed the
+# baseline, they get at most one extra session's worth of data. That is bounded,
+# and the alternative - refusing logins while the WAN is down - is far worse for a
+# business whose entire continuity story is "it still works when Starlink does
+# not".
+#
+# Throttle, never disconnect. Running out of included data at 2am should slow
+# someone down, not cut them off: the plan still has days left and the customer
+# has paid for them.
+# -----------------------------------------------------------------------------
+wavly-fup-check = policy {
+	if (&control:Wavly-Data-Cap && &control:Wavly-Data-Cap > 0) {
+		update control {
+			&Wavly-Used-Bytes := "%{expr: %{request:Acct-Input-Octets} + %{request:Acct-Output-Octets}}"
+			&Wavly-Used-Bytes += "%{control:Wavly-Used-Baseline}"
+		}
+
+		if (&control:Wavly-Used-Bytes >= &control:Wavly-Data-Cap) {
+			# Only CoA once. Without this guard every interim update re-sends the
+			# same CoA, which churns the router's queue tree and fills its log
+			# with a message that says nothing new.
+			if (!&control:Wavly-Fup-Active || (&control:Wavly-Fup-Active == 0)) {
+				update coa {
+					&User-Name = "%{request:User-Name}"
+					&Acct-Session-Id = "%{request:Acct-Session-Id}"
+					&NAS-IP-Address = "%{packet:NAS-IP-Address}"
+					&Framed-IP-Address = "%{request:Framed-IP-Address}"
+					&Mikrotik-Rate-Limit = "%{control:Wavly-Fup-Rate}"
+				}
+				%{sql: SELECT wavly_queue('auth_event', jsonb_build_object('type','fup_applied','username','%{SQL-User-Name}','used_bytes','%{control:Wavly-Used-Bytes}','cap_bytes','%{control:Wavly-Data-Cap}','rate','%{control:Wavly-Fup-Rate}'))}
+			}
+		}
+	}
+}

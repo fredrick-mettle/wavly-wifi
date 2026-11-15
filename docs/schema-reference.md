@@ -1,6 +1,6 @@
 <!-- GENERATED FILE — DO NOT EDIT BY HAND.
      Run: npm run db:docs
-     Source: db/migrations/0001_initial_cloud.sql, db/migrations/0002_edge_radius.sql -->
+     Source: db/migrations/0001_initial_cloud.sql, db/migrations/0002_edge_radius.sql, db/migrations/0003_edge_radius_logic.sql -->
 
 # Schema Reference (generated)
 
@@ -13,9 +13,11 @@ reviewable. For the reasoning behind the design see
 
 ## Cloud database (Supabase) — authoritative
 
-The single source of truth for customers, money and entitlements. 42 tables.
+The single source of truth for customers, money and entitlements.
 
-Source: `db/migrations/0001_initial_cloud.sql` — 42 tables, 3 views, 9 functions, 74 indexes.
+Source: `db/migrations/0001_initial_cloud.sql`
+
+42 tables, 3 views, 9 functions, 74 indexes.
 
 ### Tables
 
@@ -1388,9 +1390,11 @@ Reads: `subscriptions`
 
 ## Edge node database (on-site) — RADIUS projection
 
-Stock FreeRADIUS rlm_sql tables plus sync machinery. 15 tables. Never holds prices, payments or the authoritative subscription.
+Stock FreeRADIUS rlm_sql tables plus Wavly sync machinery. Never holds prices, payments or the authoritative subscription.
 
-Source: `db/migrations/0002_edge_radius.sql` — 15 tables, 0 views, 0 functions, 19 indexes.
+Source: `db/migrations/0002_edge_radius.sql`, `db/migrations/0003_edge_radius_logic.sql`
+
+16 tables, 1 view, 3 functions, 22 indexes.
 
 ### Tables
 
@@ -1438,6 +1442,8 @@ _Indexes:_
 - `radacct_active_session_idx` — `acctuniqueid` PARTIAL
 - `radacct_bulk_close` — `nasipaddress`, `acctstarttime` PARTIAL
 - `radacct_start_user_idx` — `acctstarttime`, `username`
+- `radacct_active_user_idx` — `acctsessionid`, `username`, `nasipaddress`
+- `radacct_stop_user_idx` — `acctstoptime`, `username`
 - `radacct_class_idx` — `class`
 - `radacct_unsynced_idx` — `acctstarttime` PARTIAL
 
@@ -1542,12 +1548,25 @@ Accepted and rejected authentications — the evidence trail for "it says my   p
 | `username` | `text` | no |  |  |
 | `pass` | `text` | yes |  |  |
 | `reply` | `text` | yes |  |  |
+| `calledstationid` | `text` | yes |  |  |
+| `callingstationid` | `text` | yes |  |  |
 | `authdate` | `timestamptz` | no | now() |  |
+| `class` | `text` | yes |  |  |
 
 _Indexes:_
 - `radpostauth_username` — `username`, `authdate`
+- `radpostauth_class_idx` — `class`
 - `radpostauth_reply` — `reply`, `authdate`
 - `radpostauth_brin` — BRIN `authdate`
+
+#### `nasreload`
+
+Official FreeRADIUS table. Records when each NAS last reloaded so the simul_count_query / simul_verify_query joins can ignore sessions that were open before the reboot. Required whenever `session { sql }` is enabled, which is how Simultaneous-Use (the per-customer device limit) is enforced.
+
+| Column | Type | Null | Default / Generated | Keys & constraints |
+|---|---|---|---|---|
+| `nasipaddress` | `inet` | no |  | **PK** |
+| `reloadtime` | `timestamptz` | no |  |  |
 
 #### `edge_state`
 
@@ -1678,6 +1697,20 @@ Runtime knobs FreeRADIUS and syncd need WITHOUT a cloud round trip: default   se
 | `name` | `text` | no |  |  |
 | `applied_at` | `timestamptz` | no | now() |  |
 | `checksum` | `text` | yes |  |  |
+
+### Views
+
+#### `wavly_open_sessions`
+
+Sessions with no Accounting-Stop yet - i.e. what Simultaneous-Use counts. stale_after_nas_reload flags rows that predate a NAS reboot and should be ignored; since_last_update shows how long ago we last heard from the session, which is how you spot a row that will never close.
+
+Reads: `radacct`, `nasreload`
+
+### Functions
+
+- `wavly_check_device()`
+- `wavly_device_count()`
+- `wavly_queue()`
 
 ---
 

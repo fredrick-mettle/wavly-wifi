@@ -1,0 +1,43 @@
+# -*- text -*-
+# =============================================================================
+# GENERATED FILE - do not edit, and do not commit the rendered version.
+# =============================================================================
+# Rendered by deploy/edge/generate.mjs.
+# Install as /etc/freeradius/3.0/sites-available/originate-coa, then:
+#     ln -s ../sites-available/originate-coa /etc/freeradius/3.0/sites-enabled/originate-coa
+#
+# WHAT THIS IS FOR
+# `update coa { ... }` in sites-available/wavly tells FreeRADIUS to SEND a
+# Change-of-Authorization packet, but it does not say where to. This file is the
+# where: one home_server per router, each referenced by that client's
+# `coa_server` in clients.conf.
+#
+# Without it the server logs
+#     WARNING: Unknown destination <nas>:3799 for CoA request
+# and the CoA is silently dropped - so FUP throttling appears to work (no error in
+# our logs, the accounting record says the cap was crossed) while the customer
+# keeps downloading at full speed.
+#
+# WHY THE SECRET MATCHES THE CLIENT SECRET
+# Upstream's example says the CoA secret "SHOULD NOT be the same as the shared
+# secret in a client section". That is good general advice and we deliberately do
+# not follow it, because RouterOS has exactly ONE secret per RADIUS client entry
+# (/radius add ... secret=...) and `/radius incoming` authenticates CoA and
+# Disconnect packets with that same secret. There is no way to configure a second
+# one. So on MikroTik the two must match or every CoA is rejected.
+#
+# WHY THIS MATTERS ENOUGH TO HAVE ITS OWN FILE
+# CoA is the only mechanism that can act on a customer who is ALREADY online.
+# Without it: a subscription that expires at 23:59 keeps working until the device
+# happens to re-authenticate (potentially days later); a customer who blows
+# through their data cap stays at full speed until the same thing happens; and
+# Simultaneous-Use cannot actually drop the extra session. All three are the
+# difference between a business that enforces its terms and one that hopes.
+#
+# And CoA cannot be originated on a wall clock - FreeRADIUS can only send it while
+# handling an incoming Access-Request or Accounting-Request. So the expiry case is
+# driven by syncd calling bin/wv-coa, which sends the same packet type to the same
+# port. Both paths are configured here and in the router's firewall.
+# =============================================================================
+
+@@COA_HOME_SERVERS@@

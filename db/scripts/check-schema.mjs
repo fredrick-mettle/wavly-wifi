@@ -22,7 +22,7 @@
  *
  * Exits non-zero on any error, so it belongs in CI.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -31,11 +31,37 @@ const require = createRequire(import.meta.url);
 const { parse } = require('libpg-query');
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-const DEFAULT_FILES = [
-  'db/migrations/0001_initial_cloud.sql',
-  'db/migrations/0002_edge_radius.sql',
-  'db/seed/0001_core_defaults.sql',
-];
+/**
+ * Discover the SQL files rather than hardcoding them.
+ *
+ * This was a hardcoded list of three paths, which meant adding
+ * db/migrations/0003_edge_radius_logic.sql silently checked nothing at all: the
+ * run still printed "No structural errors found" while a new file went entirely
+ * unexamined. A schema checker that quietly ignores files is worse than no
+ * checker, because it produces the confidence the checker exists to earn.
+ *
+ * Migrations are zero-padded (0001, 0002, ...) so a lexicographic sort is the
+ * apply order, which matters: FK resolution is checked in file order.
+ */
+function discoverSql(dir) {
+  let names;
+  try {
+    names = readdirSync(resolve(ROOT, dir));
+  } catch {
+    return [];
+  }
+  return names
+    .filter((n) => n.endsWith('.sql'))
+    .sort()
+    .map((n) => `${dir}/${n}`);
+}
+
+const DEFAULT_FILES = [...discoverSql('db/migrations'), ...discoverSql('db/seed')];
+
+if (!DEFAULT_FILES.length) {
+  process.stderr.write('check-schema: found no .sql files under db/migrations or db/seed\n');
+  process.exit(1);
+}
 
 // No args -> check the real schema. With args -> check exactly those files,
 // resolved against the repo root if relative and against cwd if absolute.
