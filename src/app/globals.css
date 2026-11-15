@@ -102,11 +102,3 @@ body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
-
-/* Print only the voucher sheet */
-@media print {
-  body * { visibility: hidden !important; }
-  .print-target, .print-target * { visibility: visible !important; }
-  .print-target { position: absolute !important; left: 0; top: 0; width: 100%; padding: 12px; background: #fff; }
-  .print-target .modal-shell { border: 0 !important; box-shadow: none !important; max-height: none !important; overflow: visible !important; }
-}

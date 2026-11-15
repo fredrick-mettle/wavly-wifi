@@ -88,6 +88,37 @@ export default function VouchersView() {
     notify(`Exported ${filtered.length} vouchers as CSV`);
   }
 
+  function printSheet() {
+    if (!batch) return;
+    const win = window.open("", "_blank", "width=900,height=760");
+    if (!win) { notify("Allow pop-ups to print the voucher sheet", "err"); return; }
+    const cards = batch.codes.map((c) => `
+      <div class="card">
+        <div class="mark">✳</div>
+        <div class="meta">WAVLY WIFI · ${batch.planName}</div>
+        <div class="code">${c}</div>
+        <div class="hint">Enter this code on the guest portal and accept the terms to connect.</div>
+      </div>`).join("");
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Wavly WiFi · ${batch.planName} vouchers</title>
+      <style>
+        *{box-sizing:border-box}body{font-family:Inter,Arial,sans-serif;margin:0;padding:24px;color:#0f172a}
+        h1{font-size:20px;margin:0 0 4px}p.sub{margin:0 0 20px;font-size:12px;color:#64748b}
+        .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+        .card{border:1px dashed #94a3b8;border-radius:12px;padding:14px;break-inside:avoid}
+        .mark{font-size:18px;color:#7159f4}.meta{font-size:9px;letter-spacing:.14em;font-weight:700;color:#94a3b8;margin-top:6px;text-transform:uppercase}
+        .code{font-family:ui-monospace,Menlo,monospace;font-size:15px;font-weight:800;letter-spacing:.08em;margin-top:8px}
+        .hint{font-size:9px;color:#94a3b8;margin-top:8px;line-height:1.4}
+        @media print{body{padding:8px}.card{border-color:#cbd5e1}}
+      </style></head><body>
+      <h1>Wavly WiFi · ${batch.planName}</h1>
+      <p class="sub">${batch.codes.length} access codes · ${batch.note || "Voucher batch"} · ${new Date().toLocaleDateString("en-GB")}</p>
+      <div class="grid">${cards}</div>
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 350);
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -218,19 +249,15 @@ export default function VouchersView() {
         subtitle={`${batch?.planName ?? ""} · ${batch?.note || "No batch note"}`} wide
         footer={<>
           <button onClick={() => downloadCsv(batch?.codes ?? [], batch?.planName ?? "")} className="btn-ghost !py-2"><Download className="h-4 w-4" /> CSV</button>
-          <button onClick={() => window.print()} className="btn-ghost !py-2"><Printer className="h-4 w-4" /> Print</button>
+          <button onClick={printSheet} className="btn-ghost !py-2"><Printer className="h-4 w-4" /> Print</button>
           <button onClick={async () => { try { await navigator.clipboard.writeText((batch?.codes ?? []).join("\n")); notify("All codes copied"); } catch { notify("Could not copy", "err"); } }} className="btn-ghost !py-2"><Copy className="h-4 w-4" /> Copy all</button>
           <button onClick={() => setBatch(null)} className="btn-primary !py-2"><Check className="h-4 w-4" /> Done</button>
         </>}>
         {batch && (
-          <div className="print-target">
-            <div className="mb-4 hidden print-only">
-              <p className="font-display text-xl font-extrabold text-slate-900">Wavly WiFi · {batch.planName}</p>
-              <p className="text-xs text-slate-500">{batch.codes.length} access codes · {new Date().toLocaleDateString("en-GB")}</p>
-            </div>
+          <div>
             <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
               {batch.codes.map((c) => (
-                <div key={c} className="print-sheet flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5">
+                <div key={c} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5">
                   <div><p className="font-mono text-[12px] font-bold tracking-wide text-slate-800">{c}</p><p className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-400">{batch.planName}</p></div>
                   <CopyButton text={c} label="" className="no-print" />
                 </div>

@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   Activity, Bell, ChevronDown, ExternalLink, LayoutDashboard, Layers, LogOut,
   Menu, Radio, RefreshCw, Search, Settings, ShieldCheck, Ticket, Wifi, X,

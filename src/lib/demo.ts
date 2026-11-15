@@ -122,7 +122,7 @@ export function buildDemoSnapshot(): Snapshot {
       batch_id: i < 40 ? "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" : "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       note: null,
       created_at: created,
-      expires_at: new Date(new Date(created).getTime() + 30 * DAY).toISOString(),
+      expires_at: new Date(new Date(created).getTime() + (status === "expired" ? -DAY : 30 * DAY)).toISOString(),
       used_at: status === "used" ? new Date(new Date(created).getTime() + Math.floor(r() * 6 * HOUR)).toISOString() : null,
     });
   }
