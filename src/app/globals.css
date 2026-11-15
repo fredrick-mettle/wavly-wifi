@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+
+html, body { min-height: 100%; }
+body {
+  background: #f6f7fb;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  font-family: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
+}
+::selection { background: #7159f4; color: #fff; }
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-slate-200/80 bg-white shadow-soft;
+  }
+  .input {
+    @apply w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-brand-400 focus:ring-4 focus:ring-brand-100;
+  }
+  .field-label {
+    @apply mb-2 block text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-150 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary { @apply btn bg-brand-600 text-white shadow-glow hover:bg-brand-700; }
+  .btn-ghost { @apply btn border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50; }
+  .btn-dark { @apply btn bg-ink text-white hover:bg-slate-800; }
+  .btn-danger { @apply btn border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100; }
+  .icon-btn {
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-900;
+  }
+  .chip { @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold; }
+  .glass {
+    background: rgba(255, 255, 255, 0.065);
+    backdrop-filter: blur(28px);
+    -webkit-backdrop-filter: blur(28px);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+  }
+  .table-row { @apply border-b border-slate-100 transition-colors last:border-0 hover:bg-slate-50/70; }
+  .th { @apply px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400; }
+  .td { @apply px-4 py-3 text-sm text-slate-700; }
+}
+
+/* Portal atmosphere */
+.portal-bg {
+  background:
+    radial-gradient(900px 620px at 12% 8%, rgba(93, 63, 224, 0.34), transparent 62%),
+    radial-gradient(760px 620px at 88% 12%, rgba(22, 174, 133, 0.20), transparent 62%),
+    radial-gradient(900px 760px at 62% 100%, rgba(48, 74, 200, 0.24), transparent 65%),
+    #070b18;
+}
+.portal-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 20%, transparent 100%);
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 20%, transparent 100%);
+}
+.orb { position: absolute; border-radius: 9999px; filter: blur(2px); pointer-events: none; }
+.gradient-text {
+  background: linear-gradient(100deg, #ffffff 10%, #cfc5ff 48%, #7de9c8 92%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.hero-line {
+  background: linear-gradient(90deg, #7159f4, #2fc79c, #ffbe70, #7159f4);
+  background-size: 220% 100%;
+  animation: shimmer 8s linear infinite;
+}
+
+/* Utilities */
+.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+.scroll-thin::-webkit-scrollbar-thumb { background: #d9dce8; border-radius: 999px; }
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: #b9bed2; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.tabular { font-variant-numeric: tabular-nums; }
+
+@keyframes shimmer { 0% { background-position: 0% 50%; } 100% { background-position: 220% 50%; } }
+@keyframes ring-pulse {
+  0% { transform: scale(.8); opacity: .65; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+.ring-pulse::after {
+  content: ""; position: absolute; inset: 0; border-radius: 999px;
+  border: 1px solid currentColor; animation: ring-pulse 2.4s ease-out infinite;
+}
+
+@media print {
+  .no-print { display: none !important; }
+  .print-only { display: block !important; }
+  body { background: #fff !important; }
+  .print-sheet { box-shadow: none !important; border: 1px solid #e2e8f0 !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+
+/* Print only the voucher sheet */
+@media print {
+  body * { visibility: hidden !important; }
+  .print-target, .print-target * { visibility: visible !important; }
+  .print-target { position: absolute !important; left: 0; top: 0; width: 100%; padding: 12px; background: #fff; }
+  .print-target .modal-shell { border: 0 !important; box-shadow: none !important; max-height: none !important; overflow: visible !important; }
+}
